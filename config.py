@@ -345,17 +345,23 @@ class ConfigError(RuntimeError):
     """配置缺失或不合法。"""
 
 
-def _read_source() -> dict:
-    """按 secrets → 环境变量 的顺序取配置，返回普通 dict。"""
-    try:  # pragma: no cover - 依赖 Streamlit 运行时
+def _read_source() -> tuple[dict, str | None]:
+    """读取 secrets，返回 ``(source, note)``。
+
+    ``note`` 非空表示 **secrets 本身读不出来**（TOML 语法错误等）。
+    必须如实带出去 —— 否则「配置压根读不了」会被伪装成「你没填凭证」，
+    用户就会对着完全正确的配置反复检查。
+    """
+    try:
         import streamlit as st
 
-        secrets = st.secrets
-        if secrets:
-            return {k: secrets[k] for k in secrets}
-    except Exception:
-        pass
-    return {}
+        return {k: st.secrets[k] for k in st.secrets}, None
+    except Exception as exc:  # noqa: BLE001
+        # 没有 secrets 文件属于**正常**情况（可以只靠环境变量），不算错误
+        if type(exc).__name__ == "StreamlitSecretNotFoundError":
+            return {}, None
+        # 截断：这段文字会被渲染到页面上，别把解析器可能带出的文档片段整段搬上去
+        return {}, f"{type(exc).__name__}: {exc}"[:200]
 
 
 def _source_get(source: dict, section: str, field: str, env_key: str) -> str | None:
@@ -368,21 +374,53 @@ def _source_get(source: dict, section: str, field: str, env_key: str) -> str | N
     return os.environ.get(env_key)
 
 
+def describe_source(source: dict, note: str | None) -> str:
+    """把「到底读到了什么」写成一句人话，用于配置报错。
+
+    只列**段名与字段名**，绝不列值 —— 这段文字会渲染到页面上。
+    """
+    if note:
+        return f"读取 secrets 失败（{note}）"
+    if not source:
+        return "没有读到任何 secrets，环境变量兜底也没命中"
+    parts: list[str] = []
+    for key, value in source.items():
+        if isinstance(value, dict):
+            parts.append(f"[{key}] → {sorted(value.keys())}")
+        else:
+            parts.append(f"“{key}”（顶层，没放进任何 [段] 里）")
+    return "、".join(parts)
+
+
 def load_settings(*, require_credentials: bool = True) -> Settings:
     """装配运行期配置。
 
     require_credentials=False 时允许 app_id/app_secret 为空（供离线测试与
     资源构建使用）。
+
+    配置缺失时，报错信息必须**说清到底读到了什么**（只列键名、不列值），
+    否则用户会对着正确的配置反复检查。
     """
-    source = _read_source()
+    source, source_error = _read_source()
+    seen = describe_source(source, source_error)
 
     app_id = _source_get(source, "feishu", "app_id", "APP_ID") or ""
     app_secret = _source_get(source, "feishu", "app_secret", "APP_SECRET") or ""
 
     if require_credentials and (not app_id or not app_secret):
+        # 归因要如实：是「secrets 压根读不了」还是「读到了但没有这一项」，
+        # 两者的排查方向完全不同。
+        lead = (
+            "读不到飞书配置：secrets 解析失败"
+            if source_error
+            else "缺少飞书应用凭证（app_id / app_secret）"
+        )
         raise ConfigError(
-            "缺少飞书应用凭证。请在 .streamlit/secrets.toml 的 [feishu] 段填写 "
-            "app_id 与 app_secret。"
+            f"{lead}。当前读到的配置：{seen}。"
+            "需要的是 [feishu] 段下的 app_id 与 app_secret 两项"
+            '（写成 app_id = "cli_…" 与 app_secret = "…"）。'
+            "本地写进 .streamlit/secrets.toml；"
+            "Streamlit Cloud 写进 Settings → Secrets，写完要点保存。"
         )
 
     bases: list[BaseSpec] = []
@@ -391,7 +429,9 @@ def load_settings(*, require_credentials: bool = True) -> Settings:
         table = _source_get(source, key, "main_table_id", f"{key.upper()}_TABLE_ID")
         if not token or not table:
             raise ConfigError(
-                f"缺少 {key} 的 base_token 或 main_table_id，请检查 secrets.toml。"
+                f"缺少 {key} 的 base_token 或 main_table_id。"
+                f"当前读到的配置：{seen}。"
+                f"需要 [{key}] 段里的 base_token 与 main_table_id。"
             )
         bases.append(
             BaseSpec(

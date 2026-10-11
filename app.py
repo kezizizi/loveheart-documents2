@@ -13,7 +13,7 @@ from __future__ import annotations
 import streamlit as st
 
 from config import ORG_NAME
-from ui import pages, state, theme
+from ui import components, pages, state, theme
 
 st.set_page_config(
     page_title=f"爱心足迹 · {ORG_NAME}",
@@ -28,16 +28,23 @@ def main() -> None:
         pages.render_app()
     except Exception as exc:  # noqa: BLE001 - 兜底，避免整页白屏
         theme.inject_theme()
+        detail = str(exc)
         hint = ""
-        if "凭证" in str(exc) or "secrets" in str(exc).lower():
+        if "凭证" in detail or "secrets" in detail.lower():
             hint = (
-                "看起来还没有配置飞书密钥。请在 <code>.streamlit/secrets.toml</code> 的 "
-                "<code>[feishu]</code> 段填写 app_id 与 app_secret。<br/>"
+                "飞书密钥没读到。<b>本地</b>：写进 <code>.streamlit/secrets.toml</code>；"
+                "<b>Streamlit Cloud</b>：写进 <code>Settings → Secrets</code>，"
+                "写完要<b>点保存</b>。<br/>"
+                "内容必须是 <code>[feishu]</code> 段下的 <code>app_id</code> 与 "
+                "<code>app_secret</code> —— 只粘两行 <code>key = \"value\"</code> "
+                "而没有段头是不行的。<br/>"
                 "想先看看界面，可以设 <code>AX_DEMO=1</code> 用演示数据启动。"
             )
         st.markdown(
             f"<div class='ax-note ax-note-error'><div><b>启动失败</b><br/>{hint}"
-            f"<br/><span style='font-size:12px;opacity:.75'>技术信息：{exc}</span></div></div>",
+            # ⚠️ 异常文本可能含配置内容，必须转义；不转义还能把页面结构打坏
+            f"<br/><span style='font-size:12px;opacity:.75'>技术信息："
+            f"{components.esc(detail)}</span></div></div>",
             unsafe_allow_html=True,
         )
 
