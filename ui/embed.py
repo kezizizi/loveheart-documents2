@@ -109,11 +109,22 @@ def load_registry() -> ActivityRegistry:
     每个新访客都会重建一次（约 175 次请求），而飞书 API 有月度配额。
     """
     settings = get_settings()
-    return build_registry(
+    registry = build_registry(
         get_client(),
         settings.bases,
         max_workers=settings.max_workers,
     )
+    # 有的库「活动关联全瞎」（主表字段或 block 树没读到）时必须喊出来：
+    # 这种情况查询仍然成功，只是那个库一场活动都查不到 —— 不写日志就没有任何线索，
+    # 而社员看到的会是一句「你的记录还没建关联」（红线 3.16）。
+    # 恢复办法：修好权限后调 ui.embed.refresh()（或重启应用）让注册表重建。
+    if registry.link_blind:
+        _LOGGER.warning(
+            "注册表不完整：这些库的活动关联**全部不可见**，会一场活动都查不到｜%s｜"
+            "先查协作者权限/字段权限，再调 ui.embed.refresh() 重建",
+            "、".join(registry.link_blind),
+        )
+    return registry
 
 
 @st.cache_data(ttl=DEFAULT_MEMBER_TTL, show_spinner=False)

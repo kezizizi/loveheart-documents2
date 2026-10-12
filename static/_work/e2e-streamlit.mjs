@@ -350,8 +350,11 @@ ok('产物能被浏览器解码成正尺寸位图', Array.isArray(actions.natura
 ok('下载文件名以 .png 结尾且带姓名与学号',
   !!actions.pngName && actions.pngName.endsWith('.png') &&
   actions.pngName.includes('张三') && actions.pngName.includes(SID), actions.pngName);
-/* 把 PNG 落盘：肉眼看一眼是最终验证，也留作回归证据 */
-if (actions.dataUrl && actions.dataUrl.startsWith('data:image/png')) {
+/* 把 PNG 落盘：肉眼看一眼是最终验证，也留作回归证据。
+   ⚠️ 必须判 OUT：没给截图目录时 OUT 是 null（见第 25 行），
+   resolve(null, …) 会直接把整个脚本打挂 —— 我第一次就栽在这。 */
+if (OUT && actions.dataUrl && actions.dataUrl.startsWith('data:image/png')) {
+  mkdirSync(OUT, { recursive: true });
   const file = resolve(OUT, 'export-card.png');
   writeFileSync(file, Buffer.from(actions.dataUrl.split(',')[1], 'base64'));
   console.log('SHOT ' + file + '  (' + Math.round(actions.size / 1024) + ' KB)');

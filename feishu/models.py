@@ -65,12 +65,20 @@ class ActivityRegistry:
     errors: tuple[str, ...] = ()
     # base_key → 主表字段名列表（用于构建最小字段投影）
     main_fields: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    #: 主表字段**没读到**的库（base_key）。非空即表示这些库的「活动关联」彻底看不见了：
+    #: 关联列名进不了主表投影 → 拿不到 link record_id → 那些库的参与记录**一场都取不到**，
+    #: 而且全程不报错。查询侧必须把它当成「没读到」，绝不能说成「你没有关联活动」。
+    #: 典型成因：`base:field:read` 未授权，或构建时恰好被限流。
+    link_blind: tuple[str, ...] = ()
 
     def main_field_names(self, base_key: str) -> tuple[str, ...]:
         for key, names in self.main_fields:
             if key == base_key:
                 return names
         return ()
+
+    def is_link_blind(self, base_key: str) -> bool:
+        return base_key in self.link_blind
 
     def by_table_id(self) -> dict[str, ActivityTable]:
         return {t.table_id: t for t in self.tables}

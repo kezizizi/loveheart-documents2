@@ -100,6 +100,18 @@ def main() -> int:
         if no_time:
             print(f"       ⚠ 未识别到时间字段：{len(no_time)} 张（时间轴将回退到学期标签）")
 
+        # 「活动关联」是取数的唯一入口（红线 3.1）：一张表如果没有 main_link_field，
+        # 它的记录**永远查不到**，而且不会报错。整库为 0 时查询会安静地返回 0 场活动，
+        # 用户看到的是「你的记录还没建关联」—— 见红线 3.16 / CLAUDE.md §8.4.2。
+        has_link = [t for t in tables if t.main_link_field]
+        print(f"       ── 认得「活动关联列」的表：{len(has_link)} / {len(tables)} 张")
+        if tables and not has_link:
+            print("       ⚠⚠⚠ 这个库的关联列**一张都没认出来** —— 该库会一场活动都查不到！")
+            print("            常见成因：① 应用缺 base:field:read / base:table:read（去开放平台补）")
+            print("                      ② 应用不是这个库的协作者（见 8.5，权限要给「可管理」）")
+            print("                      ③ 构建注册表时刚好被限流（重建一次通常就好）")
+            print("            重建办法：ui.embed.refresh()，或重启应用。")
+
     if registry.errors:
         print(f"\n  ── 提示 / 错误（{len(registry.errors)} 条）")
         for message in registry.errors[:10]:

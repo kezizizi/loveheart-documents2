@@ -504,6 +504,9 @@ def test_query_member_survives_one_base_unreadable(specs):
     assert "2025秋金盲杖" in names
     assert "26秋-安宁疗护" not in names
     assert any("26-27" in e for e in result.errors)
+    # 这个库的活动**一场都看不到**（block 树没读到 → 表都没发现）——
+    # 必须如实标成「没读到」，否则用户会以为自己在 26-27 真的没参加过活动。
+    assert result.bases_unread == ("26-27 学年",), result.bases_unread
 
 
 def test_a_base_whose_main_table_never_answered_is_reported_as_unread(specs):
@@ -551,6 +554,56 @@ def test_a_base_whose_main_table_never_answered_is_reported_as_unread(specs):
 
 def _main_table_id(specs, key: str) -> str:
     return next(s for s in specs if s.key == key).main_table_id
+
+
+def test_a_base_whose_main_fields_failed_is_never_shown_as_no_activities(specs):
+    """🚩 用户报的「档案找到了，还没有关联到活动」的**完整机制**。
+
+    `build_registry` 里读主表字段（`list_fields`）失败时只是记一条 errors
+    （见 registry.py 的 `main_fields = []`），后果是连锁的、而且**全程不报错**：
+
+        main_fields = []  →  main_link_index = {}
+        →  该库每张活动表的 main_link_field 都成了空串
+        →  main_projection 里一个关联列都不带
+        →  search_records 不返回关联列
+        →  link_targets_of 为空
+        →  **该库贡献 0 场活动**，而 found 仍然是 True
+
+    于是页面说「你的记录还没建立关联，去找骨干」—— 明明是系统读不到。
+    更糟的是这份残缺注册表会被**全局缓存 24 小时**。
+
+    这条测试保证：主表字段没读到的库，必须被如实标成「没读到」，而不是「没有活动」。
+    """
+    from tests.conftest import FakeBitableClient, load_fixture
+
+    raw_fields = load_fixture("fields.json")
+    raw_records = load_fixture("records.json")
+    flat_f: dict[tuple[str, str], list] = {}
+    flat_r: dict[tuple[str, str], list] = {}
+    for raw, target in ((raw_fields, flat_f), (raw_records, flat_r)):
+        for base, tables in raw.items():
+            for tid, items in tables.items():
+                target[(base, tid)] = items
+
+    class MainFieldsDown(FakeBitableClient):
+        """只让 25-26 的**主表字段**读不到（未授权 / 限流），别的都正常。"""
+
+        def list_fields(self, base_token, table_id):
+            if base_token == BASE_25_26 and table_id == _main_table_id(specs, "base_25_26"):
+                raise RuntimeError("模拟：base:field:read 未授权或限流")
+            return super().list_fields(base_token, table_id)
+
+    client = MainFieldsDown(
+        blocks=load_fixture("blocks.json"), fields=flat_f, records=flat_r
+    )
+    registry = build_registry(client, specs)
+    result = query_member(client, registry, specs, "张三", "2300017473")
+
+    assert result.found is True, "人还是找得到的"
+    assert result.bases_unread == ("25-26 学年",), (
+        "主表字段读不到的库等于「活动关联看不见了」，必须标成没读到 —— "
+        f"否则前端会说「你没有关联活动」。实际 bases_unread={result.bases_unread}"
+    )
 
 
 def test_main_projection_drops_over_long_link_field(specs):

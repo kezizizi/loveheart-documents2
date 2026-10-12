@@ -34,6 +34,10 @@ from feishu import schema as S
 from feishu.models import ActivityRegistry, ActivityTable
 from feishu.protocol import BitableClient
 
+#: 主表字段读失败后的重试间隔。这是「关联全瞎」的唯一触发点，值得等一拍再试；
+#: 不重试的话，一份关联全瞎的注册表会被缓存 24 小时（见 models.ActivityRegistry.link_blind）。
+REGISTRY_FIELD_RETRY_PAUSE = 1.5
+
 
 # --------------------------------------------------------------------------
 # 目录结构
@@ -264,16 +268,26 @@ def build_registry(
     """构建全量活动注册表。
 
     单张表失败不会中断整体：错误进入 ``errors``，该表被跳过。
+
+    ⚠️ 唯一的例外是**主表字段读不到**：那不是一个库少几张表，而是这个库的
+    「活动关联」彻底看不见（关联列进不了投影 → 一场活动都取不到，还不报错）。
+    这种情况记进 ``link_blind``，由查询侧如实说成「没读到」—— 见红线 3.16。
     """
     tables: list[ActivityTable] = []
     errors: list[str] = []
     main_fields_by_base: list[tuple[str, tuple[str, ...]]] = []
+    link_blind: list[str] = []
 
     for spec in specs:
         try:
             blocks = client.list_blocks(spec.base_token)
         except Exception as exc:  # noqa: BLE001 - 单库失败不影响另一库
             errors.append(f"[{spec.label}] 读取 block 树失败：{exc}")
+            errors.append(
+                f"[{spec.label}] ⚠ 因此该库的活动表一张都没被发现"
+                "—— 该库会一场活动都查不到"
+            )
+            link_blind.append(spec.key)
             continue
 
         index = {b["id"]: b for b in blocks if b.get("id")}
@@ -287,8 +301,21 @@ def build_registry(
         try:
             main_fields = client.list_fields(spec.base_token, spec.main_table_id)
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"[{spec.label}] 读取主表字段失败：{exc}")
-            main_fields = []
+            # 读不到主表字段 ≠ 少一条提示：**这个库的关联列全都进不了投影**，
+            # 于是该库的参与记录一场都取不到，而且不会报错（用户报过的那个现象）。
+            # 先重试一次：限流是这里最常见的成因，而重建一次注册表要 170+ 次请求，
+            # 不重试就可能把一份「关联全瞎」的注册表缓存 24 小时。
+            time.sleep(REGISTRY_FIELD_RETRY_PAUSE)
+            try:
+                main_fields = client.list_fields(spec.base_token, spec.main_table_id)
+            except Exception as retry_exc:  # noqa: BLE001
+                errors.append(f"[{spec.label}] 读取主表字段失败：{retry_exc}")
+                errors.append(
+                    f"[{spec.label}] ⚠ 因此该库的活动关联**全部不可见**"
+                    "（关联列进不了主表投影）—— 该库会一场活动都查不到"
+                )
+                link_blind.append(spec.key)
+                main_fields = []
 
         main_fields_by_base.append(
             (spec.key, tuple(f.get("name") or "" for f in main_fields if f.get("name")))
@@ -336,4 +363,5 @@ def build_registry(
         built_at=clock(),
         errors=tuple(errors),
         main_fields=tuple(main_fields_by_base),
+        link_blind=tuple(link_blind),
     )

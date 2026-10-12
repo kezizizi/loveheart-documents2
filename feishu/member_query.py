@@ -608,6 +608,11 @@ def query_member(
         # 光看异常会把这一整类漏掉 —— 那正是用户看到的「档案找到了却一场活动都没有」。
         if not look.records and look.reason is None:
             unread.append(spec.label)
+        # 这个库的**主表字段没读到** → 它的关联列进不了主表投影 → 这个库的参与记录
+        # 一场都取不到，而 lookup 完全成功（人找得到、也不会报错）。
+        # 不在这里标出来的话，用户会看到「你没有关联活动」——把系统故障说成他没补数据。
+        if registry.is_link_blind(spec.key):
+            unread.append(spec.label)
 
     if not records:
         # ⚠️ 有库没读到的时候，「查无此人」这个结论是**不成立**的：
