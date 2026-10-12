@@ -300,7 +300,13 @@ _SHELL_CSS = """
   [data-testid="stMainBlockContainer"], .block-container {
     padding: 0 !important; max-width: 100% !important;
   }
-  [data-testid="stMain"] { overflow: visible; }
+  /* ⚠️ 这里**不要**碰 `[data-testid="stMain"]` 的 overflow。
+     它就是 Streamlit 的滚动容器（实测 scrollHeight 1615 / clientHeight 708），
+     而它的父级 stAppViewContainer 是 overflow:hidden、文档本身也不滚。
+     一旦把它设成 visible，全页就**只能滚不动**：
+       处 置 前：stMain overflowY=visible → 滚轮完全无效
+       处 置 后：保持 Streamlit 默认 auto → 正常滚动
+     守卫测试：static/_work/e2e-streamlit.mjs 的「宿主可滚动」几条。 */
   [data-testid="stVerticalBlock"] { gap: 0 !important; }
   [data-testid="stCustomComponentV1"] { width: 100%; }
   [data-testid="stCustomComponentV1"] iframe { display: block; width: 100%; border: 0; }

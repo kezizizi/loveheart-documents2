@@ -131,8 +131,19 @@
   function deliver(payload) { if (sink && payload) sink(payload); }
 
   var seq = 0;
+  /* 用户刚提交的那次查询（归一化后的「姓名\0学号」）。
+     用来分辨「这条 render 是在回答我的查询」还是「Streamlit 自发重发的 render」——
+     后者必须忽略，否则重建 DOM 会把用户在页面里的状态全抹掉
+     （实测症状：档案里点开一个部组，展开后立刻自己收回去）。 */
+  var pendingQuery = null;
+
+  function identityOf(name, sid) {
+    return global.AX_DERIVE.normalizeName(name) + '\u0000' + global.AX_DERIVE.normalizeSid(sid);
+  }
+
   function query(name, sid) {
     if (component) {
+      pendingQuery = identityOf(name, sid);
       /* nonce 不可省：Streamlit 把组件当控件，值没变就不会重跑。
          同一个人连查两次（点了「重新查询」再提交相同姓名学号）会被吞掉。 */
       seq += 1;
@@ -153,6 +164,25 @@
         deliver(r);
       }, d);
     });
+  }
+
+  /* 这条载荷是在回答用户刚才那次查询吗？是就认领掉，不是就别动。
+     用**身份**而不是「载荷是否相同」来判断，因为同一个人连查两次载荷会一模一样，
+     那一次必须重新渲染；而 Streamlit 自发重发的 render 也是同一份载荷，
+     却必须忽略 —— 只有身份对得上才能区分这两件事。 */
+  function claimPending(payload) {
+    if (pendingQuery === null) return false;
+    if (!payload || payload.status !== 'OK') {
+      // 失败码里没有 member，没法比身份；它就是对我们这次查询的回答
+      pendingQuery = null;
+      return true;
+    }
+    var member = payload.member || {};
+    if (identityOf(member.name, member.sid) !== pendingQuery) {
+      return false;   // 陈旧的一条（比如上一次查询的残留），继续等真正的那条
+    }
+    pendingQuery = null;
+    return true;
   }
 
   function loadMock(cb) {
@@ -210,6 +240,8 @@
     params: params,
     query: query,
     onResult: onResult,
+    /* 让渲染层判断「这条数据要不要重建 DOM」——见 app.js::onResult */
+    claimPending: claimPending,
     reportHeight: reportHeight
   };
 })(window);

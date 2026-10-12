@@ -50,7 +50,7 @@
 | --- | --- |
 | Python 测试 | **199 项**，全绿，不触网、不需密钥 |
 | 前端自检 | **156 项**，在真实浏览器里跑（`static/_work/run-selftest.mjs`） |
-| Streamlit 端到端验收 | **49 项**（`static/_work/e2e-streamlit.mjs`） |
+| Streamlit 端到端验收 | **55 项**（`static/_work/e2e-streamlit.mjs`） |
 | 自动发现的活动问卷表 | **171 张**（25-26 学年 125 + 26-27 学年 46） |
 | 注册表构建耗时 | 约 13 秒（约 175 次 API 请求） |
 | 单次社员查询 | 约 5 秒（**开同行伙伴后约翻倍请求量**，见 3.11） |
@@ -217,6 +217,34 @@ render → 撑高 iframe → 宿主重排 → 再 render。实测 18 秒内收�
 **另外**：`ui/embed.query_payload` 里 `build_payload` 也必须在 `try` **里面**。  
 它是我们自己的翻译代码，真出 bug 时用户该看到一条正常提示、完整栈进服务端日志，  
 而不是整页变成 Streamlit 的「启动失败」。
+
+### 3.13 不要碰 Streamlit 滚动容器的 overflow
+
+`[data-testid="stMain"]` **就是**整页唯一的滚动容器 —— 它的父级 `stAppViewContainer` 是  
+`overflow: hidden`，而文档本身不滚（实测 `documentElement.scrollHeight == clientHeight`）。  
+把它设成 `overflow: visible` 会让**滚轮完全失效**（那个元素仍然可以被程序化滚动，  
+所以只测 `scrollTop = N` 是发现不了这个 bug 的）。实测数据：改动前  
+`stMain {overflowY: visible, 1623/1074}` → 滚不动；改回默认 `auto` → 手势滚动位移 549px。
+
+外壳 CSS 只做「收干净」：隐藏 header/toolbar/footer、去掉 block-container 的 padding。  
+**不要**动任何 `overflow`。守卫：`e2e-streamlit.mjs` 的「宿主滚动」三条。
+
+### 3.14 「Streamlit 重发的 render」不等于「有新数据」
+
+Streamlit 会在**组件元素自身重排**时重发 `streamlit:render` —— 包括我们上报新高度之后。  
+前端如果见 render 就重建 DOM，用户在页面里的状态会被全部抹掉。实测症状：  
+**「档案里点开一个部组，展开了又立刻自己收回去」**（足迹里展开的感想同理）。  
+诊断依据：点击后 `open=1 contentH=955` → 1.2 秒后 `open=0 contentH=781`，  
+而 JS 上下文标记不变（iframe 没重载）→ 是 JS 主动重渲染，不是浏览器刷新。
+
+所以 `app.js` 的 `onResult` 必须先判断要不要重建 DOM，**两条判据缺一不可**：
+
+1. 这条载荷是在回答用户刚提交的那次查询吗？—— 由 `bridge.js::claimPending` 按  
+   **身份**（归一化「姓名 + 学号」）判断，失败码（没有 member）一律认作回答；
+2. 否则，载荷与上一次**完全一样** → 认定为自发重渲染，什么都不做。
+
+只看第 2 条会坏在「同一个人连查两次」：载荷一模一样，但那一次**必须**重新渲染。  
+守卫：`e2e-streamlit.mjs` 的「点开部组后保持展开」「展开感想后保持展开」。
 
 ---
 
@@ -391,7 +419,7 @@ AX_DEMO=1 "C:/Users/gzk16/AppData/Local/Programs/Python/Python39/python.exe" -m 
 # 前端回归：156 项断言，自带静态服务器与一次性浏览器 profile，跑完自动清理
 node static/_work/run-selftest.mjs
 
-# Streamlit 端到端：先起 Streamlit，再跑（49 项 + 逐视图截图）
+# Streamlit 端到端：先起 Streamlit，再跑（55 项 + 逐视图截图）
 AX_DEMO=1 python -m streamlit run app.py --server.headless true --server.port 8602
 node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
 ```
@@ -404,7 +432,7 @@ node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
 > （不开的话 `el.focus()` 不派发 focus 事件，「键盘聚焦圆点等价于悬停」那条会在  
 > **完全未改动的原版前端上同样失败**）。
 
-**改前端时最容易骗到自己的三件事**（都真实踩过，`e2e-streamlit.mjs` 里都有对应处理）：
+**写前端回归时最容易骗到自己的五件事**（都真实踩过，脚本里都有对应处理）：
 
 1. **抓到隐藏的旧组件框。** Streamlit 重跑时会短暂留下一个隐藏 iframe，里面 DOM 齐全但  
    没有布局盒，`el.click()` 与真实交互都不生效。选择器必须挑 `clientHeight > 0` 的那个。
@@ -413,6 +441,14 @@ node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
    用 `dispatchEvent` 绕开自己装的桩。
 3. **拿竞态当 bug。** 高度上报是去抖 40ms + postMessage + React 重排，导出卡还要等  
    161KB 栏图加载完才长到最终高度。断言前要**轮询等它贴合**。
+4. **在没有溢出的页面上测「能不能滚」。** 档案视图只有 781px 高，在它上面测只会得到  
+   「没东西可滚」的假阴性 —— 要在足迹视图（1600+px）上测。
+5. **用 `Input.dispatchMouseEvent('mouseWheel')` 测滚轮。** 无头下它**派发不到任何元素**  
+   （位移恒为 0）；改用 `Input.synthesizeScrollGesture`，它真的走 Chrome 的滚动链  
+   （实测位移 549px）。
+
+浏览器扩展也会往控制台吐 `Could not establish connection` 之类的错，那是扩展的噪音、  
+不是页面的问题 —— 两个脚本都用 `--disable-extensions` 关掉了。
 
 ### 8.4 真实接口联调自检
 

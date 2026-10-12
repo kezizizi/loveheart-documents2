@@ -145,8 +145,22 @@
     SRC.query(name, sid);
   }
 
-  /* 数据到达 —— 两种形态共用同一个出口 */
+  /* 数据到达 —— 两种形态共用同一个出口。
+     ⚠️ 这里必须先判断「要不要重建 DOM」：
+     Streamlit 会在**组件元素自身重排**时重发 render（例如我们上报了新高度之后），
+     而重建 DOM 会把用户在页面里的状态全部抹掉 —— 实测症状是
+     「档案里点开一个部组，展开了又立刻自己收回去」，足迹里展开的感想同理。
+     判据两条，缺一不可：
+       ① 这条载荷是在回答用户刚提交的那次查询吗（由数据通道按**身份**判断）→ 是则一定要渲染；
+       ② 否则，载荷内容和上一次完全一样 → 是自发重渲染，什么都不做，保住页面状态。
+     只看 ② 会坏在「同一个人连查两次」：载荷一模一样，但那一次必须重新渲染。 */
+  var lastPayloadJson = null;
   SRC.onResult(function (r) {
+    var answersQuery = SRC.claimPending(r);
+    var json = JSON.stringify(r);
+    if (!answersQuery && json === lastPayloadJson) return;
+    lastPayloadJson = json;
+
     if (!r || r.status !== 'OK') return notice((r && r.status) || 'NOT_FOUND_NAME');
     /* 高度与动效开关可能在首帧之后才随 args 到达，这里再对齐一次 */
     if (Q.get('still') === '1') { STILL = true; document.body.classList.add('still'); }
@@ -199,7 +213,7 @@
         '<p class="ask">这一天，你的心情是怎样的呢？</p>' +
         (m.joinMessage ? '<blockquote class="joinmsg">' + esc(m.joinMessage) + '</blockquote>' : '') +
       '</div></div>' +
-      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013a" alt=""></div></div>';
+      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013b" alt=""></div></div>';
 
     r.years.forEach(function (y) {
       h += '<div class="yhead"><span class="yn">' + esc(y.year) + ' 学年</span></div>';
@@ -689,8 +703,8 @@
 
     h += '<div class="card-head">' +
       /* 栏图整幅显示：不加遮罩、不裁切、上面不压任何东西。
-         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013a）并放到卡片右下角。 */
-      '<img class="art" src="assets/export-banner.jpg?v=20261013a" alt="">' +
+         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013b）并放到卡片右下角。 */
+      '<img class="art" src="assets/export-banner.jpg?v=20261013b" alt="">' +
       '<div class="tit"><h2>' + esc(m.name) + '的爱心足迹</h2>' +
       '<div class="when">' + dotd(m.joinDate) + ' 入社</div></div>' +
       '</div>';
@@ -717,11 +731,11 @@
 
     h += '<div class="card-foot">' +
       /* 左下角的社团三字图（用户提供）；文字全部移到中列，不会被它压住 */
-      '<img class="sealimg" src="assets/club-seal.png?v=20261013a" alt="">' +
+      '<img class="sealimg" src="assets/club-seal.png?v=20261013b" alt="">' +
       '<div class="motto">奉献爱心，呼唤爱心，自我教育</div>' +
       '<div class="org">北京大学学生爱心社</div>' +
       '<div class="asof">数据截至 ' + dotd(new Date().toISOString().slice(0, 10)) + '</div>' +
-      '<div class="qr"><img src="assets/export-qr.png?v=20261013a" alt="爱心社关注二维码"></div>' +
+      '<div class="qr"><img src="assets/export-qr.png?v=20261013b" alt="爱心社关注二维码"></div>' +
       '</div>';
 
     h += '</div>';

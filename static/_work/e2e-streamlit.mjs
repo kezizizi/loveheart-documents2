@@ -53,7 +53,7 @@ const cdpPort = await freePort();
    复用 profile 会拿到缓存里的旧 app.js/bridge.js。 */
 const profile = mkdtempSync(resolve(tmpdir(), 'ax-e2e-'));
 const browser = spawn(findEdge(), [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-component-extensions-with-background-pages',
   `--user-data-dir=${profile}`, `--remote-debugging-port=${cdpPort}`,
   '--remote-allow-origins=*', '--window-size=1440,1200', 'about:blank'
 ], { stdio: 'ignore' });
@@ -319,6 +319,108 @@ ok('导出视图的「下载 CSV」真的生成了 Blob', actions.csv === 1,
 ok('CSV 的下载文件名带姓名与学号',
   !!actions.csvName && actions.csvName.includes('张三') && actions.csvName.includes(SID),
   actions.csvName);
+
+/* ── 4. 宿主滚动 + 组件内交互状态（这两条是补上的回归）────────────
+ * 两个都真实出过事故，而且**只靠肉眼看渲染结果是发现不了的**：
+ * ① 我在外壳 CSS 里把 stMain 的 overflow 设成 visible，而它就是唯一的滚动容器
+ *    （父级 stAppViewContainer 是 hidden、文档本身不滚）→ 整页完全滚不动。
+ * ② Streamlit 会在组件元素自身重排时重发 render；若见 render 就重建 DOM，
+ *    用户在页面里的状态会被抹掉 → 档案里点开部组「展开又立刻收回」。
+ * 这里用**真实滚轮事件**和**等待**来验，而不是只看样式表。 */
+console.log('\n===== 宿主滚动与交互状态 =====');
+/* 滚动必须在**真的比视口高**的页面上验：档案视图只有几百像素，
+   在它上面测「能不能滚」会得到「没东西可滚」的假阴性 —— 第一次就栽在这。
+   足迹视图是最高的那个（1600+px）。 */
+p = await openResult(`${BASE}/?still=1&view=trail&name=${NAME}&sid=${SID}`);
+await waitForFit();
+
+const scrollInfo = JSON.parse(await evalJs(`(() => {
+  const box = (sel) => { const el = document.querySelector(sel); return el
+    ? { sh: el.scrollHeight, ch: el.clientHeight, st: el.scrollTop, ov: getComputedStyle(el).overflowY } : null; };
+  return JSON.stringify({
+    docEl: box('html'), body: box('body'),
+    appView: box('[data-testid="stAppViewContainer"]'),
+    stMain: box('[data-testid="stMain"]')
+  });
+})()`));
+ok('页面内容比视口高（前提：确实有东西可滚）',
+  Math.max(scrollInfo.stMain?.sh || 0, scrollInfo.appView?.sh || 0) >
+  Math.max(scrollInfo.stMain?.ch || 0, scrollInfo.appView?.ch || 0) + 50,
+  `stMain ${scrollInfo.stMain?.sh}/${scrollInfo.stMain?.ch}`);
+
+const scrollableBox = (scrollInfo.stMain?.sh > scrollInfo.stMain?.ch && ['auto', 'scroll'].includes(scrollInfo.stMain?.ov))
+  ? 'stMain'
+  : (scrollInfo.appView?.sh > scrollInfo.appView?.ch && ['auto', 'scroll'].includes(scrollInfo.appView?.ov)) ? 'appView' : null;
+ok('存在一个允许用户滚动的容器（overflow 是 auto/scroll，不是 hidden/visible）',
+  scrollableBox !== null,
+  `stMain.ov=${scrollInfo.stMain?.ov} appView.ov=${scrollInfo.appView?.ov}`);
+
+/* 真的滚一次。用 Input.synthesizeScrollGesture（合成真实手势，会走 Chrome 的
+   滚动链），而不是 Input.dispatchMouseEvent('mouseWheel') —— 后者在无头下
+   实测派发不到任何元素（位移恒为 0），拿它做断言只能得到假阴性。 */
+await send('Input.synthesizeScrollGesture', {
+  x: 640, y: 400, xDistance: 0, yDistance: -600, speed: 2000, gestureSourceType: 'mouse'
+});
+await sleep(900);
+const afterWheel = JSON.parse(await evalJs(`(() => {
+  const box = (sel) => { const el = document.querySelector(sel); return el ? el.scrollTop : null; };
+  const f = [...document.querySelectorAll('iframe')].find(x => (x.getAttribute('src') || '').includes('/component/'));
+  let frameTop = null;
+  try { frameTop = f.contentWindow.scrollY ?? f.contentDocument.documentElement.scrollTop; } catch (e) { /* 忽略 */ }
+  return JSON.stringify({
+    stMain: box('[data-testid="stMain"]'), appView: box('[data-testid="stAppViewContainer"]'),
+    win: window.scrollY, doc: document.documentElement.scrollTop, frame: frameTop
+  });
+})()`));
+const movedBy = Math.abs(afterWheel.stMain || 0) + Math.abs(afterWheel.appView || 0)
+  + Math.abs(afterWheel.win || 0) + Math.abs(afterWheel.doc || 0) + Math.abs(afterWheel.frame || 0);
+ok('滚动一次真的能滚起来', movedBy > 0, `位移=${movedBy} ${JSON.stringify(afterWheel)}`);
+await shot('05-scrolled');
+
+/* 档案：点开一个部组，等 2.5 秒后它必须还开着 */
+p = await openResult(`${BASE}/?still=1&view=dossier&name=${NAME}&sid=${SID}`);
+const expandCheck = JSON.parse(await evalJs(`(() => {
+  ${PICK_FRAME}
+  const d = f.contentDocument;
+  const btns = d.querySelectorAll('.views button');
+  for (const b of btns) if (b.dataset.view === 'dossier') b.click();
+  const plate = d.querySelector('#panel-dossier .gplate');
+  if (!plate) return JSON.stringify({ err: '没有部组文件头' });
+  plate.click();
+  return JSON.stringify({ open: d.querySelectorAll('#panel-dossier .gsec.open').length,
+                          name: (d.querySelector('#panel-dossier .gsec.open .gname') || {}).textContent || null });
+})()`));
+await sleep(2500);
+const expandAfter = JSON.parse(await evalJs(`(() => {
+  ${PICK_FRAME}
+  const d = f.contentDocument;
+  return JSON.stringify({ open: d.querySelectorAll('#panel-dossier .gsec.open').length,
+                          view: [...d.querySelectorAll('.views button')].find(b => b.classList.contains('on'))?.dataset.view });
+})()`));
+ok('档案里点开部组后它保持展开（不被重渲染收回）',
+  expandCheck.open === 1 && expandAfter.open === 1,
+  `点击后 ${expandCheck.open} → 2.5s 后 ${expandAfter.open}（${expandCheck.name || ''}）`);
+ok('等候期间视图没有跳回去', expandAfter.view === 'dossier', expandAfter.view);
+await shot('06-dossier-expanded');
+
+/* 足迹：展开一条感想，同样必须保持 */
+p = await openResult(`${BASE}/?still=1&view=trail&name=${NAME}&sid=${SID}`);
+const noteCheck = JSON.parse(await evalJs(`(() => {
+  ${PICK_FRAME}
+  const d = f.contentDocument;
+  const dot = d.querySelector('#panel-trail .stop .ndot.solid');
+  if (!dot) return JSON.stringify({ err: '没有实心圆点' });
+  dot.dispatchEvent(new d.defaultView.PointerEvent('pointerenter', { pointerType: 'mouse', bubbles: true }));
+  return JSON.stringify({ open: d.querySelectorAll('#panel-trail .stop.open').length });
+})()`));
+await sleep(2500);
+const noteAfter = JSON.parse(await evalJs(`(() => {
+  ${PICK_FRAME}
+  const d = f.contentDocument;
+  return JSON.stringify({ open: d.querySelectorAll('#panel-trail .stop.open').length });
+})()`));
+ok('足迹里展开一条感想后它保持展开', noteCheck.open === 1 && noteAfter.open === 1,
+  `展开后 ${noteCheck.open} → 2.5s 后 ${noteAfter.open}`);
 
 /* ── 5. 在页面里提交一次，验证组件回传 → Python → 重新渲染 ───── */
 consoleErrors.length = 0;

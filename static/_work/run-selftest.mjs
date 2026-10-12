@@ -79,7 +79,7 @@ for (let i = 0; i < 40; i++) {
 const profile = mkdtempSync(resolve(tmpdir(), 'ax-selftest-'));
 profileDir = profile;
 const edge = spawn(findEdge(), [
-  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+  '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-component-extensions-with-background-pages',
   `--user-data-dir=${profile}`,
   `--remote-debugging-port=${cdpPort}`, '--remote-allow-origins=*',
   '--window-size=1440,1000', 'about:blank'
