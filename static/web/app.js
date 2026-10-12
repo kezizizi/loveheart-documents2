@@ -246,7 +246,7 @@
         '<p class="ask">这一天，你的心情是怎样的呢？</p>' +
         (m.joinMessage ? '<blockquote class="joinmsg">' + esc(m.joinMessage) + '</blockquote>' : '') +
       '</div></div>' +
-      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013f" alt=""></div></div>';
+      '<img class="path-art" src="assets/trail-path-ink.png?v=20261014a" alt=""></div></div>';
 
     r.years.forEach(function (y) {
       h += '<div class="yhead"><span class="yn">' + esc(y.year) + ' 学年</span></div>';
@@ -736,8 +736,8 @@
 
     h += '<div class="card-head">' +
       /* 栏图整幅显示：不加遮罩、不裁切、上面不压任何东西。
-         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013f）并放到卡片右下角。 */
-      '<img class="art" src="assets/export-banner.jpg?v=20261013f" alt="">' +
+         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261014a）并放到卡片右下角。 */
+      '<img class="art" src="assets/export-banner.jpg?v=20261014a" alt="">' +
       '<div class="tit"><h2>' + esc(m.name) + '的爱心足迹</h2>' +
       '<div class="when">' + dotd(m.joinDate) + ' 入社</div></div>' +
       '</div>';
@@ -764,11 +764,11 @@
 
     h += '<div class="card-foot">' +
       /* 左下角的社团三字图（用户提供）；文字全部移到中列，不会被它压住 */
-      '<img class="sealimg" src="assets/club-seal.png?v=20261013f" alt="">' +
+      '<img class="sealimg" src="assets/club-seal.png?v=20261014a" alt="">' +
       '<div class="motto">奉献爱心，呼唤爱心，自我教育</div>' +
       '<div class="org">北京大学学生爱心社</div>' +
       '<div class="asof">' + esc(D.scopeText()) + '</div>' +
-      '<div class="qr"><img src="assets/export-qr.png?v=20261013f" alt="爱心社关注二维码"></div>' +
+      '<div class="qr"><img src="assets/export-qr.png?v=20261014a" alt="爱心社关注二维码"></div>' +
       '</div>';
 
     h += '</div>';
@@ -812,6 +812,14 @@
      另外 <style> 是按 SVG 文档生效的，那里没有 body，所以 body 上的继承属性
      （字体、文字颜色）必须显式搬到快照根节点上，否则卡片会变成 Times 衬线黑字。 */
   var PNG_SCALE = 2;   /* 2 倍像素：微信里放大看文字不糊 */
+  /* 渲染时多留的余量（按比例 + 保底像素），多出来的部分会被 trimBottom 裁掉，
+     所以「慷慨一点」只花一点内存，换来的是**绝不切内容**。 */
+  var PNG_HEIGHT_MARGIN_RATIO = 0.15;
+  var PNG_HEIGHT_MARGIN_MIN = 60;
+  /* 渲染用的画布高度上限（**CSS px**，×2 之后是 14000 设备像素，
+     仍在 Chrome 的 16384 单边上限内）。540px 宽的卡片要撞到这个上限，
+     得有 230 场以上的活动；真撞上了也只会退回「按上限裁」，不会崩。 */
+  var PNG_MAX_HEIGHT = 7000;
 
   function loadImage(src) {
     return new Promise(function (res, rej) {
@@ -873,24 +881,105 @@
   }
 
   function snapshotBaseStyle(width) {
-    var out = 'width:' + width + 'px;background:#fbfaf7;';
+    /* 底色刻意用**纯白**（不是 --paper）：导出画布铺的就是白底，
+       卡片自己是不透明的浅纸色 + 一条底边框 —— 于是「纯白」≡「卡片之外」，
+       底部裁剪（trimBottom）靠这个判据找卡片的真实底边。 */
+    var out = 'width:' + width + 'px;background:#ffffff;';
     var rootCs = window.getComputedStyle(document.documentElement);
     for (var i = 0; i < rootCs.length; i++) {
       var p = rootCs[i];
       if (p.slice(0, 2) === '--') out += p + ':' + rootCs.getPropertyValue(p).trim() + ';';
     }
     var body = window.getComputedStyle(document.body);
-    ['font-family', 'font-size', 'font-weight', 'line-height', 'color',
+    ['font-family', 'font-size', 'font-weight', 'color',
       'letter-spacing', 'font-variant-numeric'].forEach(function (k) {
       var v = body.getPropertyValue(k);
       if (v) out += k + ':' + v + ';';
     });
+    /* 🚩 line-height 必须按**比例**复制，绝不能复制算出来的像素值。
+       body 的 25.6px 是「16px × 1.6」的结果；把它写死成 25.6px 之后，
+       卡片标题（30px）与统计数字（27px）的行盒会被压扁 ——
+       快照里的卡片比屏幕上矮一截，量出来的高度就不对，导出图底部被切掉。
+       实测这份差异：标题块 −19.6px、统计块 −8.6px，合计 −11px。 */
+    var lh = parseFloat(body.lineHeight), fs = parseFloat(body.fontSize);
+    if (isFinite(lh) && isFinite(fs) && fs > 0) out += 'line-height:' + (lh / fs) + ';';
     return out;
   }
 
+  /* 从下往上找最后一行「不是纯白」的像素 —— 那就是卡片的底边。
+     用它定最终高度比任何估算都稳：永远不会切掉内容，
+     也不会在底部留白边（多渲染出来的余量在这里正好被裁掉）。 */
+  function trimBottom(cv) {
+    var ctx = cv.getContext('2d');
+    var px = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    var last = -1;
+    for (var y = cv.height - 1; y >= 0 && last < 0; y--) {
+      var row = y * cv.width * 4;
+      for (var x = 0; x < cv.width; x++) {
+        var i = row + x * 4;
+        if (px[i] !== 255 || px[i + 1] !== 255 || px[i + 2] !== 255) { last = y; break; }
+      }
+    }
+    /* 没内容、或者已经贴到画布底边（说明余量不够）→ 原样返回 */
+    if (last < 0 || last + 1 >= cv.height) return cv;
+    var out = document.createElement('canvas');
+    out.width = cv.width;
+    out.height = last + 1;
+    out.getContext('2d').drawImage(cv, 0, 0);
+    return out;
+  }
+
+  /* 卡片的设计宽度（＝它的 max-width，540）。
+     🚩 不能拿 card.offsetWidth 当宽度：手机上图卡会被压到 300 多像素，
+     而且会命中 CSS 里的手机断点（@media max-width:620px）——
+     照它拍下来就是用户看到的那张：又窄又长、活动名挤成三行、还被截断。
+     导出图统一按**设计宽度**出，手机与电脑得到同一张图。 */
+  function cardDesignWidth(card) {
+    var max = parseFloat(window.getComputedStyle(card).maxWidth);
+    if (isFinite(max) && max >= 320) return Math.round(max);
+    return Math.round(card.offsetWidth) || 540;
+  }
+
+  /* 在隐藏 iframe 里量卡片高度 —— 必须与快照**同一个版式上下文**。
+     为什么不能在主文档里量：媒体查询按**视口**求值，手机视口命中手机版式，
+     而快照里注入的 CSS 已经把 @media 丢掉（固定用桌面版式）。两边版式不同，
+     量出来的高度对不上 → foreignObject 把内容裁掉 → 导出图底部被截断。
+     iframe 宽 900（>620，避开手机断点）＋里面一个固定 540 宽的容器
+     → 版式与快照一致，量出来的就是快照真正需要的高度。 */
+  function measureCardHeight(css, innerHtml, W) {
+    return new Promise(function (res, rej) {
+      var frame = document.createElement('iframe');
+      frame.setAttribute('aria-hidden', 'true');
+      frame.style.cssText =
+        'position:fixed;left:-99999px;top:0;width:900px;height:300px;border:0;visibility:hidden';
+      document.body.appendChild(frame);
+      var doc = frame.contentDocument;
+      doc.open();
+      doc.write('<!doctype html><html><head><meta charset="utf-8"><style>' + css +
+        '</style></head><body style="margin:0"><div id="axsnap">' + innerHtml +
+        '</div></body></html>');
+      doc.close();
+      var box = doc.getElementById('axsnap');
+      var finish = function () {
+        var h = Math.ceil(box.getBoundingClientRect().height);
+        if (frame.parentNode) frame.parentNode.removeChild(frame);
+        if (h > 0) res(h); else rej(new Error('量不到卡片高度'));
+      };
+      /* 图片（已内联成 data URI）通常同步就绪，但不赌：等它们加载 + 3 秒兜底 */
+      var loaded = Promise.all(Array.prototype.map.call(doc.images, function (im) {
+        if (im.complete && im.naturalWidth) return Promise.resolve();
+        return new Promise(function (r) {
+          im.addEventListener('load', r);
+          im.addEventListener('error', r);
+        });
+      }));
+      Promise.race([loaded, new Promise(function (r) { setTimeout(r, 3000); })]).then(finish, finish);
+    });
+  }
+
   function snapshotCard(card) {
-    var W = Math.round(card.offsetWidth), H = Math.round(card.offsetHeight);
-    if (!W || !H) return Promise.reject(new Error('卡片还没布局，量不到尺寸'));
+    var W = cardDesignWidth(card);
+    if (!W) return Promise.reject(new Error('卡片还没布局，量不到宽度'));
 
     var clone = card.cloneNode(true);
     clone.classList.add('snapping');
@@ -906,27 +995,44 @@
       var css = collectCss() +
         '\n.snapping,.snapping *,.snapping *:before,.snapping *:after' +
         '{animation:none !important;transition:none !important;}';
-      /* 必须是 XML 序列化 —— 见上面 xmlEscape 的说明 */
-      var markup = new XMLSerializer().serializeToString(clone);
-      var svg =
-        '<svg xmlns="http://www.w3.org/2000/svg" width="' + (W * PNG_SCALE) +
-        '" height="' + (H * PNG_SCALE) + '" viewBox="0 0 ' + W + ' ' + H + '">' +
-        '<foreignObject x="0" y="0" width="' + W + '" height="' + H + '">' +
-        '<div xmlns="http://www.w3.org/1999/xhtml" style="' + xmlAttr(snapshotBaseStyle(W)) + '">' +
-        '<style>' + xmlEscape(css) + '</style>' + markup +
-        '</div></foreignObject></svg>';
+      var base = snapshotBaseStyle(W);
+      /* 两套序列化：iframe 是 HTML 上下文（用 outerHTML），
+         SVG 是 XML 上下文（必须 XMLSerializer，见上面 xmlEscape 的说明）。
+         两者内容一致，只有一个容器 div 包着，版式因此可复现。 */
+      var innerForFrame = '<div style="' + xmlAttr(base) + '">' +
+        '<style>' + css + '</style>' + clone.outerHTML + '</div>';
 
-      return loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
-    }).then(function (img) {
-      var cv = document.createElement('canvas');
-      cv.width = W * PNG_SCALE;
-      cv.height = H * PNG_SCALE;
-      var ctx = cv.getContext('2d');
-      /* 先铺白底：PNG 的透明区在微信/相册里常常显示成黑块 */
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, cv.width, cv.height);
-      ctx.drawImage(img, 0, 0, cv.width, cv.height);
-      return cv;
+      return measureCardHeight(css, innerForFrame, W).then(function (measured) {
+        /* 先用一个**足够高**的画布渲染，再按实际像素裁掉底部空白。
+           为什么不直接拿 measured 当高度：foreignObject 会把超出它的内容裁掉，
+           量得略小就会切掉内容（用户报的就是这个）。多留余量 + 裁剪两头都不出错：
+           既不切内容，也不留白边 —— 导出图的高度就精确等于卡片的内容高度。 */
+        var H = Math.min(
+          Math.round(measured * (1 + PNG_HEIGHT_MARGIN_RATIO)) + PNG_HEIGHT_MARGIN_MIN,
+          PNG_MAX_HEIGHT
+        );
+        var markup = new XMLSerializer().serializeToString(clone);
+        var svg =
+          '<svg xmlns="http://www.w3.org/2000/svg" width="' + (W * PNG_SCALE) +
+          '" height="' + (H * PNG_SCALE) + '" viewBox="0 0 ' + W + ' ' + H + '">' +
+          '<foreignObject x="0" y="0" width="' + W + '" height="' + H + '">' +
+          '<div xmlns="http://www.w3.org/1999/xhtml" style="' + xmlAttr(base) + '">' +
+          '<style>' + xmlEscape(css) + '</style>' + markup +
+          '</div></foreignObject></svg>';
+
+        return loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg))
+          .then(function (img) {
+            var cv = document.createElement('canvas');
+            cv.width = W * PNG_SCALE;
+            cv.height = H * PNG_SCALE;
+            var ctx = cv.getContext('2d');
+            /* 先铺白底：PNG 的透明区在微信/相册里常常显示成黑块 */
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, cv.width, cv.height);
+            ctx.drawImage(img, 0, 0, cv.width, cv.height);
+            return trimBottom(cv);
+          });
+      });
     });
   }
 

@@ -297,8 +297,12 @@ const actions = JSON.parse(await evalJs(`(async () => {
   const d = f.contentDocument, w = f.contentWindow;
   const seen = { png: 0, csv: 0, csvName: null, pngName: null, err: null,
                  pngBtn: false, fired: 0, type: null, magic: null, dataUrl: null,
-                 natural: null, size: null, hasPrintBtn: !!d.getElementById('print') };
+                 natural: null, size: null, hasPrintBtn: !!d.getElementById('print'),
+                 cardH: null, cardW: null };
   try {
+    const card = d.querySelector('#panel-export .card');
+    seen.cardH = card ? card.offsetHeight : null;
+    seen.cardW = card ? card.offsetWidth : null;
     seen.pngBtn = !!d.getElementById('pngBtn');
     if (seen.pngBtn) {
       d.getElementById('pngBtn').addEventListener('click', function () { seen.fired += 1; }, true);
@@ -359,6 +363,63 @@ if (OUT && actions.dataUrl && actions.dataUrl.startsWith('data:image/png')) {
   writeFileSync(file, Buffer.from(actions.dataUrl.split(',')[1], 'base64'));
   console.log('SHOT ' + file + '  (' + Math.round(actions.size / 1024) + ' KB)');
 }
+
+/* ── 导出图不能被设备影响，也不能截断（用户报过）─────────────────
+ * 用户的两张图：手机端 648×2140（＝324 CSS px 宽、按**手机版式**拍的，
+ * 活动名挤成三行），电脑端 1080×2224，两者底部都被切掉。
+ * 两条不变量钉住：
+ *   ① 导出高度必须与卡片真实高度一致（用桌面视口下的 offsetHeight 独立核对）；
+ *   ② 同一份数据在手机视口下必须导出**同样尺寸**的图（版式按设计宽度 540，不随设备变）。
+ * ②单独就能抓住那个 bug：手机端当时只导出 1070 CSS px 高，电脑端 1112。 */
+const expH = actions.natural ? actions.natural[1] : 0;
+ok('导出图宽度是设计宽度的 2 倍（1080，不跟手机视口缩水）',
+  actions.natural && actions.natural[0] === 1080, String(actions.natural));
+ok('导出图高度与卡片真实高度一致（底部没有被切掉）',
+  actions.cardH > 0 && Math.abs(expH / 2 - actions.cardH) <= 12,
+  `导出 ${expH / 2} vs 卡片 ${actions.cardH}`);
+
+/* 手机视口再导一次：尺寸必须与桌面完全一致 */
+await send('Emulation.setDeviceMetricsOverride', {
+  width: 390, height: 844, deviceScaleFactor: 1, mobile: true
+});
+await open(`${BASE}/?still=1&view=export&name=${NAME}&sid=${SID}`, 8000);
+await waitForFrame(20000, false);
+const phoneSeen = JSON.parse(await evalJs(`(async () => {
+  ${PICK_FRAME}
+  const d = f.contentDocument, w = f.contentWindow;
+  const out = { frameW: w.innerWidth, cardW: null, cardH: null, natural: null, err: null };
+  try {
+    const card = d.querySelector('#panel-export .card');
+    out.cardW = card.offsetWidth; out.cardH = card.offsetHeight;
+    const origCreate = w.URL.createObjectURL;
+    const origClick = w.HTMLAnchorElement.prototype.click;
+    let blob = null;
+    w.URL.createObjectURL = function (b) { blob = b; return origCreate.call(w.URL, b); };
+    w.HTMLAnchorElement.prototype.click = function () {};
+    d.getElementById('pngBtn').dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    for (let i = 0; i < 60 && !blob; i++) await new Promise(r => setTimeout(r, 250));
+    if (blob) {
+      out.natural = await new Promise(res => {
+        const im = new w.Image();
+        im.onload = () => res([im.naturalWidth, im.naturalHeight]);
+        im.onerror = () => res(null);
+        im.src = URL.createObjectURL(blob);
+      });
+    }
+    w.URL.createObjectURL = origCreate;
+    w.HTMLAnchorElement.prototype.click = origClick;
+  } catch (e) { out.err = String(e); }
+  return JSON.stringify(out);
+})()`));
+ok('手机视口下卡片确实被压窄了（前提成立，否则这条没意义）',
+  phoneSeen.frameW < 620 && phoneSeen.cardW < 500,
+  `视口 ${phoneSeen.frameW}，卡片 ${phoneSeen.cardW}`);
+ok('手机端导出的图与电脑端**尺寸完全相同**（不跟设备变、也不截断）',
+  !!phoneSeen.natural && phoneSeen.natural[0] === actions.natural[0] &&
+  phoneSeen.natural[1] === actions.natural[1],
+  `手机 ${JSON.stringify(phoneSeen.natural)} vs 电脑 ${JSON.stringify(actions.natural)}${phoneSeen.err ? ' err=' + phoneSeen.err : ''}`);
+console.log(`DEBUG 手机视口：卡片 ${phoneSeen.cardW}×${phoneSeen.cardH}，导出 ${JSON.stringify(phoneSeen.natural)}`);
+await send('Emulation.clearDeviceMetricsOverride');
 
 /* CSV 是已有功能，别让它被 PNG 的改动带坏 */
 const csvSeen = JSON.parse(await evalJs(`(() => {
