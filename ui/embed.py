@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
+from typing import Callable
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -57,10 +59,19 @@ WEB_DIR: Path = PROJECT_ROOT / "static" / "web"
 _COMPONENT_KEY = "ax_footprint"
 _PAGE_ICON = WEB_DIR / "assets" / "club-seal.png"
 
+#: 判定为「没查成」时，等多久再重试一次。限流与网络抖动都是秒级的。
+RETRY_DELAY_SECONDS = 1.5
+
 #: 允许从宿主页面 URL 透传给前端的调试开关（纯展示用，不参与任何数据逻辑）
 _FORWARDED_PARAMS = ("still", "view", "open", "rip", "delay", "degraded", "name", "sid")
 
 _footprint = components.declare_component("ax_footprint", path=str(WEB_DIR))
+
+
+def _mask(name: str) -> str:
+    """日志里出现的姓名一律脱敏（与 scripts/verify_live.py 同口径）。"""
+    text = (name or "").strip()
+    return (text[0] + "＊" * (len(text) - 1)) if text else "(空)"
 
 
 # --------------------------------------------------------------------------
@@ -108,6 +119,10 @@ def load_registry() -> ActivityRegistry:
 @st.cache_data(ttl=DEFAULT_MEMBER_TTL, show_spinner=False)
 def run_query(name: str, sid: str) -> MemberQueryResult:
     """查一个人；``want_partners=True`` 让同行伙伴与活动记录**在同一批请求里**取回。"""
+    return query_with_retry(lambda: _query_once(name, sid))
+
+
+def _query_once(name: str, sid: str) -> MemberQueryResult:
     settings = get_settings()
     client = get_client()
 
@@ -123,12 +138,62 @@ def run_query(name: str, sid: str) -> MemberQueryResult:
             want_partners=True,
         )
 
-    def rebuild() -> None:
-        load_registry.clear()
-
     # 骨干改名或删列之后，缓存了 24 小时的旧字段名会让查询整体失败。
     # 这里丢掉过时的注册表重试一次，用户端是无感的。
-    return with_schema_refresh(run, rebuild)
+    return with_schema_refresh(run, load_registry.clear)
+
+
+# --------------------------------------------------------------------------
+# 「没查成」与「查无此人」的分界（红线）
+# --------------------------------------------------------------------------
+
+
+class QueryUnavailable(RuntimeError):
+    """取数失败 —— **不是**「查无此人」。
+
+    ``pick_not_found_reason`` 只有在**每个库的检索都失败了**时才返回 ``None``，
+    所以 ``found=False`` 且归因为 ``None`` 的含义是「我们根本不知道这个人在不在
+    档案里」，而不是一个查询结果。把它当成结果返回，用户会被引向补录问卷，
+    而问题其实在系统这一侧（限流 / 网络抖动 / 权限）。
+
+    ⚠️ 用**抛异常**而不是返回失败值来表达它，还有一个关键作用：
+    ``st.cache_data`` **不缓存抛异常的结果**。返回失败值会被缓存住 10 分钟，
+    于是用户「再试一次」拿到的还是同一个失败 —— 这正是「一直这样的话」的成因。
+    """
+
+
+def is_unavailable(result: MemberQueryResult) -> bool:
+    """这次是「没查成」而不是「查无此人」吗？
+
+    判据只有一条，而且**语义上是空真的**：``found=False`` 且归因 ``None``。
+    """
+    return (not result.found) and result.not_found_reason is None
+
+
+def query_with_retry(
+    once: Callable[[], MemberQueryResult],
+    *,
+    delay: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> MemberQueryResult:
+    """跑一次；只有「没查成」才等一拍重试一次；仍然没查成就抛 :class:`QueryUnavailable`。
+
+    「查无此人」**不重试**：那是确定的答案，重试只是白烧 API 配额。
+    重试只针对基础设施失败 —— 限流与网络抖动都是秒级的，等一拍往往就好了。
+    """
+    pause = RETRY_DELAY_SECONDS if delay is None else delay
+
+    result = once()
+    if not is_unavailable(result):
+        return result
+
+    sleep(pause)
+    result = once()
+    if not is_unavailable(result):
+        return result
+
+    detail = "；".join(result.errors[:3]) or "主表检索未成功，且没有留下错误信息"
+    raise QueryUnavailable(detail)
 
 
 def refresh() -> None:
@@ -155,17 +220,26 @@ def degraded_mode() -> bool:
 
 
 def query_payload(name: str, sid: str) -> dict:
-    """查一次并翻译成前端契约。**任何失败都不抛**，一律降级成一种 status。"""
+    """查一次并翻译成前端契约。**任何失败都不抛**，一律降级成一种 status。
+
+    ⚠️ ``build_payload`` 也必须在 try 里面：它是我们自己的翻译代码，真出了 bug
+    也不该让整页变成「启动失败」—— 用户看到的应该是一条正常的提示，
+    而完整栈进服务端日志。
+    """
     name = (name or "").strip()
     sid = (sid or "").strip()
     if not name or not sid:
         return P.payload_for_invalid_input()
     try:
         result = run_query(name, sid)
-    except Exception:  # noqa: BLE001 - 页面级兜底，绝不给用户白屏
-        _LOGGER.exception("查询社员足迹失败")
+        return P.build_payload(result, degraded=degraded_mode())
+    except QueryUnavailable as exc:
+        # 这不是「查无此人」，是「这次没查成」。日志里留下可执行的原因（姓名脱敏）。
+        _LOGGER.warning("取数失败（非查无此人）｜%s｜%s", _mask(name), exc)
         return P.payload_for_error()
-    return P.build_payload(result, degraded=degraded_mode())
+    except Exception:  # noqa: BLE001 - 页面级兜底，绝不给用户白屏
+        _LOGGER.exception("查询社员足迹失败（%s）", _mask(name))
+        return P.payload_for_error()
 
 
 # --------------------------------------------------------------------------
