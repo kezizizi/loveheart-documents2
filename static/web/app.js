@@ -213,7 +213,7 @@
         '<p class="ask">这一天，你的心情是怎样的呢？</p>' +
         (m.joinMessage ? '<blockquote class="joinmsg">' + esc(m.joinMessage) + '</blockquote>' : '') +
       '</div></div>' +
-      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013c" alt=""></div></div>';
+      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013e" alt=""></div></div>';
 
     r.years.forEach(function (y) {
       h += '<div class="yhead"><span class="yn">' + esc(y.year) + ' 学年</span></div>';
@@ -703,8 +703,8 @@
 
     h += '<div class="card-head">' +
       /* 栏图整幅显示：不加遮罩、不裁切、上面不压任何东西。
-         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013c）并放到卡片右下角。 */
-      '<img class="art" src="assets/export-banner.jpg?v=20261013c" alt="">' +
+         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013e）并放到卡片右下角。 */
+      '<img class="art" src="assets/export-banner.jpg?v=20261013e" alt="">' +
       '<div class="tit"><h2>' + esc(m.name) + '的爱心足迹</h2>' +
       '<div class="when">' + dotd(m.joinDate) + ' 入社</div></div>' +
       '</div>';
@@ -731,22 +731,23 @@
 
     h += '<div class="card-foot">' +
       /* 左下角的社团三字图（用户提供）；文字全部移到中列，不会被它压住 */
-      '<img class="sealimg" src="assets/club-seal.png?v=20261013c" alt="">' +
+      '<img class="sealimg" src="assets/club-seal.png?v=20261013e" alt="">' +
       '<div class="motto">奉献爱心，呼唤爱心，自我教育</div>' +
       '<div class="org">北京大学学生爱心社</div>' +
-      '<div class="asof">数据截至 ' + dotd(new Date().toISOString().slice(0, 10)) + '</div>' +
-      '<div class="qr"><img src="assets/export-qr.png?v=20261013c" alt="爱心社关注二维码"></div>' +
+      '<div class="asof">' + esc(D.scopeText()) + '</div>' +
+      '<div class="qr"><img src="assets/export-qr.png?v=20261013e" alt="爱心社关注二维码"></div>' +
       '</div>';
 
     h += '</div>';
 
     h += '<div class="card-actions">' +
-      '<button type="button" id="print">打印 / 存为 PDF</button>' +
+      '<button type="button" id="pngBtn">保存为长图（PNG）</button>' +
       '<a class="csv" href="#" id="csvBtn">下载 CSV</a>' +
+      '<span class="hint" id="pngHint" role="status" aria-live="polite"></span>' +
       '</div>';
 
     $('panel-export').innerHTML = '<div class="exportview">' + h + '</div>';
-    $('print').addEventListener('click', function () { window.print(); });
+    $('pngBtn').addEventListener('click', function () { downloadPng(); });
     $('csvBtn').addEventListener('click', function (e) { e.preventDefault(); downloadCsv(); });
     stagger($('panel-export').querySelectorAll('.card, .card-actions'), 0.06, 0.2);
   }
@@ -759,6 +760,184 @@
   /* ── 页脚 ─────────────────────────────────────────── */
   /* 原来这里有一段「数据来源 / 隐私说明」的细字。用户要求删除：
      这些说明影响观感，且不属于使用者要看的内容。 */
+
+  /* ── 导出长图（PNG）────────────────────────────────────
+     管线：克隆 .card → <img> 换成 data URI → 取样式表里**非媒体查询**的规则
+           → 塞进 SVG 的 foreignObject → 画到 canvas → toBlob('image/png')。
+
+     为什么是「快照」而不是用 canvas 重画一遍：重画等于给版式写第二份实现，
+     改一次样式就得同步改两处 —— 本仓库已经为「同一件事两份实现」修过两次 bug
+     （前后端各算一套派生、旧 UI 与新 UI 各一份部组名单）。快照天生只有一份版式。
+
+     三个必须踩对的点（都真实踩过或差点踩到）：
+     ① **图片要内联成 data URI**。SVG 里的外链图片渲染成位图时不会加载（安全限制），
+        结果是一张没有栏图、没有二维码、没有社徽的空白卡。
+     ② **样式表里的 @media 规则要丢掉**。渲染成位图时媒体查询按 SVG 自己的宽度求值，
+        540px 会命中手机版样式，版式整个变样。
+     ③ **动画要钉死在终态**。卡片带 anim-rise（opacity 从 0 起），
+        快照赶在动画中途就会拍到半透明的卡。
+     另外 <style> 是按 SVG 文档生效的，那里没有 body，所以 body 上的继承属性
+     （字体、文字颜色）必须显式搬到快照根节点上，否则卡片会变成 Times 衬线黑字。 */
+  var PNG_SCALE = 2;   /* 2 倍像素：微信里放大看文字不糊 */
+
+  function loadImage(src) {
+    return new Promise(function (res, rej) {
+      var im = new Image();
+      im.onload = function () { res(im); };
+      im.onerror = function () { rej(new Error('快照渲染失败（SVG 没能当图片解码）')); };
+      im.src = src;
+    });
+  }
+
+  /* SVG 走 <img> 加载时是按 **XML** 解析的，不是 HTML。
+     所以拼进去的东西必须是合法 XML：
+     · 克隆节点要用 XMLSerializer，**不能** outerHTML —— outerHTML 是 HTML 序列化，
+       `<img>` 不会被自闭合，XML 解析立刻失败（实测症状：img.onerror，
+       提示只有「快照渲染失败」，看不出任何原因）。XMLSerializer 还会顺手补上
+       xmlns="http://www.w3.org/1999/xhtml"，foreignObject 正需要它。
+     · 样式文本与内联 style 属性都要做 XML 转义：CSS 里可能有 `<` / `&`，
+       而 computed 的 font-family 带**双引号**，直接塞进 style="…" 会把属性截断。 */
+  function xmlEscape(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function xmlAttr(s) {
+    return xmlEscape(s).replace(/"/g, '&quot;');
+  }
+
+  function inlineImage(im) {
+    var src = im.getAttribute('src');
+    if (!src) return Promise.resolve(null);
+    if (src.slice(0, 5) === 'data:') return Promise.resolve(src);
+    return fetch(src, { credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) throw new Error(src + ' → HTTP ' + r.status);
+        return r.blob();
+      })
+      .then(function (b) {
+        return new Promise(function (res, rej) {
+          var fr = new FileReader();
+          fr.onload = function () { res(fr.result); };
+          fr.onerror = function () { rej(new Error(src + ' 读不出来')); };
+          fr.readAsDataURL(b);
+        });
+      })
+      .catch(function () { return null; });   /* 单张失败不拖垮整张图 */
+  }
+
+  function collectCss() {
+    var out = '';
+    Array.prototype.forEach.call(document.styleSheets, function (sheet) {
+      var rules;
+      try { rules = sheet.cssRules; } catch (e) { return; }   /* 跨域表读不到，跳过 */
+      if (!rules) return;
+      Array.prototype.forEach.call(rules, function (rule) {
+        /* 只取普通样式规则（type 1）。@media 会被 SVG 的宽度重新求值（见 ②），
+           @keyframes / @font-face 对一张静态快照没有意义。 */
+        if (rule.type === 1) out += rule.cssText + '\n';
+      });
+    });
+    return out;
+  }
+
+  function snapshotBaseStyle(width) {
+    var out = 'width:' + width + 'px;background:#fbfaf7;';
+    var rootCs = window.getComputedStyle(document.documentElement);
+    for (var i = 0; i < rootCs.length; i++) {
+      var p = rootCs[i];
+      if (p.slice(0, 2) === '--') out += p + ':' + rootCs.getPropertyValue(p).trim() + ';';
+    }
+    var body = window.getComputedStyle(document.body);
+    ['font-family', 'font-size', 'font-weight', 'line-height', 'color',
+      'letter-spacing', 'font-variant-numeric'].forEach(function (k) {
+      var v = body.getPropertyValue(k);
+      if (v) out += k + ':' + v + ';';
+    });
+    return out;
+  }
+
+  function snapshotCard(card) {
+    var W = Math.round(card.offsetWidth), H = Math.round(card.offsetHeight);
+    if (!W || !H) return Promise.reject(new Error('卡片还没布局，量不到尺寸'));
+
+    var clone = card.cloneNode(true);
+    clone.classList.add('snapping');
+
+    var imgs = Array.prototype.slice.call(card.querySelectorAll('img'));
+    var cloned = Array.prototype.slice.call(clone.querySelectorAll('img'));
+
+    return Promise.all(imgs.map(inlineImage)).then(function (uris) {
+      uris.forEach(function (uri, i) {
+        if (uri) cloned[i].setAttribute('src', uri);
+        else cloned[i].removeAttribute('src');     /* 取不到就去掉，别留个裂图占位 */
+      });
+      var css = collectCss() +
+        '\n.snapping,.snapping *,.snapping *:before,.snapping *:after' +
+        '{animation:none !important;transition:none !important;}';
+      /* 必须是 XML 序列化 —— 见上面 xmlEscape 的说明 */
+      var markup = new XMLSerializer().serializeToString(clone);
+      var svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="' + (W * PNG_SCALE) +
+        '" height="' + (H * PNG_SCALE) + '" viewBox="0 0 ' + W + ' ' + H + '">' +
+        '<foreignObject x="0" y="0" width="' + W + '" height="' + H + '">' +
+        '<div xmlns="http://www.w3.org/1999/xhtml" style="' + xmlAttr(snapshotBaseStyle(W)) + '">' +
+        '<style>' + xmlEscape(css) + '</style>' + markup +
+        '</div></foreignObject></svg>';
+
+      return loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
+    }).then(function (img) {
+      var cv = document.createElement('canvas');
+      cv.width = W * PNG_SCALE;
+      cv.height = H * PNG_SCALE;
+      var ctx = cv.getContext('2d');
+      /* 先铺白底：PNG 的透明区在微信/相册里常常显示成黑块 */
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(img, 0, 0, cv.width, cv.height);
+      return cv;
+    });
+  }
+
+  function pngHint(text, isError) {
+    var el = $('pngHint');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('err', !!isError);
+  }
+
+  function downloadPng() {
+    var r = state.result;
+    if (!r) return;
+    var card = $('panel-export').querySelector('.card');
+    var btn = $('pngBtn');
+    if (!card || !btn) return;
+    if (btn.disabled) return;                 /* 连点两次会生成两张，禁掉 */
+    btn.disabled = true;
+    pngHint('正在生成…', false);
+
+    snapshotCard(card).then(function (canvas) {
+      return new Promise(function (res, rej) {
+        canvas.toBlob(function (blob) {
+          /* 如实断言产物：拿不到编码器时 toBlob 会给 null，
+             这里绝不能把「没生成」当成「生成好了」 */
+          if (!blob) return rej(new Error('toBlob 没有给出图像'));
+          if (blob.type !== 'image/png') return rej(new Error('产物不是 PNG：' + blob.type));
+          var a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = '爱心足迹-' + r.member.name + '-' + r.member.sid + '.png';
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+          res(blob);
+        }, 'image/png');
+      });
+    }).then(function (blob) {
+      pngHint('已保存 PNG（' + Math.round(blob.size / 1024) + ' KB）', false);
+      setTimeout(function () { if (!btn.disabled) pngHint('', false); }, 4000);
+    }).catch(function (err) {
+      /* 失败必须说话：静默什么都不发生，用户只会以为按钮坏了 */
+      pngHint('生成失败：' + (err && err.message ? err.message : '未知原因'), true);
+      if (window.console && console.error) console.error('[导出 PNG] 失败', err);
+    }).then(function () { btn.disabled = false; });
+  }
 
   /* ── CSV ──────────────────────────────────────────── */
   function downloadCsv() {
@@ -948,6 +1127,10 @@
      · 组件形态：宿主（app.py）已经读到同样的查询参数并把结果放进 args.result，
        结果会在 render 消息里到达 —— 这里【不能】再提交一次，否则会平白多一轮
        飞书查询。深链的「loading」画面也由宿主那一轮负责。 */
+  /* 入口页的收录范围：2025秋至 <今天>（口径只有 derive.js 一份，今天动态生成） */
+  var scopeEl = $('scopeLine');
+  if (scopeEl) scopeEl.textContent = '收录范围 ' + D.scopeText();
+
   var deepName = Q.get('name'), deepSid = Q.get('sid');
   if (deepName && deepSid) {
     $('form').elements.namedItem('name').value = deepName;

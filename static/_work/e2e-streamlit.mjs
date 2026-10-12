@@ -281,44 +281,120 @@ for (const [label, n, s, expected] of failures) {
     'notice=' + p.noticeTitle + ' result=' + p.resultShown);
 }
 
-/* ── 4. 打印与 CSV：在组件框里把真实动作 stub 掉，只验事件真的接上了 ──
- * 组件框的 sandbox 里有 allow-modals（print）与 allow-downloads（CSV blob），
- * 这两件事出了 sandbox 就静默失效，所以必须真的点一次。 */
+/* ── 4. 导出产物：必须真的是 PNG，且要能解码 ────────────────────
+ * 用户明确要求「确保实际产物是 PNG」，所以这里不验「事件接上了」，
+ * 而是把 Blob **读出来**验三件事：
+ *   ① blob.type === 'image/png'（MIME）；
+ *   ② 文件头是 PNG 的魔数 \x89PNG\r\n\x1a\n（内容，防止有人把 JPEG 装进 PNG 的 MIME）；
+ *   ③ 用它 new Image() 能解码出正尺寸（真能被相册/微信打开）；
+ *   ④ 下载文件名以 .png 结尾且带姓名学号。
+ * 顺带把这张 PNG 落盘到 e2e-shots/export-card.png —— 肉眼看一眼是最强的验证。
+ * 组件框的 sandbox 里有 allow-downloads（CSV blob）。print/PDF 那条路已删除。 */
 await open(`${BASE}/?still=1&view=export&name=${NAME}&sid=${SID}`, 8000);
 await waitForFrame(20000, false);
-const actions = JSON.parse(await evalJs(`(() => {
+const actions = JSON.parse(await evalJs(`(async () => {
   ${PICK_FRAME}
   const d = f.contentDocument, w = f.contentWindow;
-  const seen = { print: 0, csv: 0, csvName: null, err: null, csvBtn: false, fired: 0,
-                 hasCreate: typeof w.URL.createObjectURL };
+  const seen = { png: 0, csv: 0, csvName: null, pngName: null, err: null,
+                 pngBtn: false, fired: 0, type: null, magic: null, dataUrl: null,
+                 natural: null, size: null, hasPrintBtn: !!d.getElementById('print') };
   try {
-    seen.csvBtn = !!d.getElementById('csvBtn');
-    if (seen.csvBtn) {
-      d.getElementById('csvBtn').addEventListener('click', function () { seen.fired += 1; }, true);
+    seen.pngBtn = !!d.getElementById('pngBtn');
+    if (seen.pngBtn) {
+      d.getElementById('pngBtn').addEventListener('click', function () { seen.fired += 1; }, true);
     }
-    w.print = function () { seen.print += 1; };
-    w.URL.createObjectURL = function () { seen.csv += 1; return 'blob:stub'; };
-    w.URL.revokeObjectURL = function () {};
-    /* ⚠️ 只 stub「下载链接自己」的 click，而且必须在点 #csvBtn **之后**才生效 ——
-       上一版把 HTMLAnchorElement.prototype.click 整个换掉，#csvBtn.click() 变成了
-       直接调我的桩函数，事件根本没派发，于是「下载没反应」是测试自己造出来的假阴性。
-       这里用 dispatchEvent 绕开原型上的桩。 */
-    d.getElementById('print').click();
+    /* 拦住下载：拿到真正的 Blob 而不是让它落进下载目录 */
+    const origCreate = w.URL.createObjectURL;
     const origClick = w.HTMLAnchorElement.prototype.click;
-    w.HTMLAnchorElement.prototype.click = function () { seen.csvName = this.getAttribute('download'); };
-    d.getElementById('csvBtn').dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    let blob = null;
+    w.URL.createObjectURL = function (b) { blob = b; return origCreate.call(w.URL, b); };
+    w.HTMLAnchorElement.prototype.click = function () { seen.pngName = this.getAttribute('download'); };
+    if (seen.pngBtn) {
+      d.getElementById('pngBtn').dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    }
+    /* 生图是异步的（fetch 图片 → 画 → toBlob），轮询等 Blob 出现 */
+    for (let i = 0; i < 60 && !blob; i++) await new Promise(r => setTimeout(r, 250));
+    if (blob) {
+      seen.type = blob.type;
+      seen.size = blob.size;
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      seen.magic = Array.from(buf.slice(0, 8)).join(',');
+      seen.dataUrl = await new Promise(res => {
+        const fr = new w.FileReader();
+        fr.onload = () => res(fr.result);
+        fr.readAsDataURL(blob);
+      });
+      seen.natural = await new Promise(res => {
+        const im = new w.Image();
+        im.onload = () => res([im.naturalWidth, im.naturalHeight]);
+        im.onerror = () => res(null);
+        im.src = URL.createObjectURL(blob);
+      });
+    }
+    w.URL.createObjectURL = origCreate;
     w.HTMLAnchorElement.prototype.click = origClick;
   } catch (e) { seen.err = String(e); }
   return JSON.stringify(seen);
 })()`));
-console.log('DEBUG actions: ' + JSON.stringify(actions));
-ok('导出视图的「打印 / 存为 PDF」真的调用 window.print', actions.print === 1,
-  'print=' + actions.print + (actions.err ? ' err=' + actions.err : ''));
-ok('导出视图的「下载 CSV」真的生成了 Blob', actions.csv === 1,
-  'createObjectURL=' + actions.csv + (actions.err ? ' err=' + actions.err : ''));
-ok('CSV 的下载文件名带姓名与学号',
-  !!actions.csvName && actions.csvName.includes('张三') && actions.csvName.includes(SID),
-  actions.csvName);
+const PNG_MAGIC = '137,80,78,71,13,10,26,10';   /* \x89 P N G \r \n \x1a \n */
+ok('导出视图有「保存为长图（PNG）」按钮', actions.pngBtn === true);
+ok('导出视图不再有打印 / 存为 PDF 按钮（那条路已删除）', actions.hasPrintBtn === false);
+ok('点按钮真的触发了一次导出', actions.fired === 1 && !actions.err,
+  `fired=${actions.fired}${actions.err ? ' err=' + actions.err : ''}`);
+ok('产物 MIME 是 image/png', actions.type === 'image/png', String(actions.type));
+ok('产物文件头是 PNG 魔数（不是把别的格式装进 PNG 的 MIME）',
+  actions.magic === PNG_MAGIC, String(actions.magic));
+ok('产物能被浏览器解码成正尺寸位图', Array.isArray(actions.natural) &&
+  actions.natural[0] > 400 && actions.natural[1] > 400,
+  String(actions.natural));
+ok('下载文件名以 .png 结尾且带姓名与学号',
+  !!actions.pngName && actions.pngName.endsWith('.png') &&
+  actions.pngName.includes('张三') && actions.pngName.includes(SID), actions.pngName);
+/* 把 PNG 落盘：肉眼看一眼是最终验证，也留作回归证据 */
+if (actions.dataUrl && actions.dataUrl.startsWith('data:image/png')) {
+  const file = resolve(OUT, 'export-card.png');
+  writeFileSync(file, Buffer.from(actions.dataUrl.split(',')[1], 'base64'));
+  console.log('SHOT ' + file + '  (' + Math.round(actions.size / 1024) + ' KB)');
+}
+
+/* CSV 是已有功能，别让它被 PNG 的改动带坏 */
+const csvSeen = JSON.parse(await evalJs(`(() => {
+  ${PICK_FRAME}
+  const d = f.contentDocument, w = f.contentWindow;
+  const out = { name: null, fired: 0, bytes: 0, err: null };
+  try {
+    const b = d.getElementById('csvBtn');
+    if (!b) return JSON.stringify(out);
+    b.addEventListener('click', function () { out.fired += 1; }, true);
+    const origCreate = w.URL.createObjectURL;
+    const origClick = w.HTMLAnchorElement.prototype.click;
+    let blob = null;
+    w.URL.createObjectURL = function (x) { blob = x; return origCreate.call(w.URL, x); };
+    w.HTMLAnchorElement.prototype.click = function () { out.name = this.getAttribute('download'); };
+    b.dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    out.bytes = blob ? blob.size : 0;
+    w.URL.createObjectURL = origCreate;
+    w.HTMLAnchorElement.prototype.click = origClick;
+  } catch (e) { out.err = String(e); }
+  return JSON.stringify(out);
+})()`));
+ok('「下载 CSV」仍然生成非空的 CSV 文件',
+  csvSeen.fired === 1 && csvSeen.bytes > 0 && !!csvSeen.name && csvSeen.name.endsWith('.csv'),
+  `fired=${csvSeen.fired} bytes=${csvSeen.bytes} name=${csvSeen.name}${csvSeen.err ? ' err=' + csvSeen.err : ''}`);
+
+/* 时间口径：导出卡片必须写「2025秋至 <今天>」（不是「数据截至」） */
+const todayDot = (() => {
+  const d = new Date();
+  const p = (n) => (n < 10 ? '0' : '') + n;
+  return d.getFullYear() + '.' + p(d.getMonth() + 1) + '.' + p(d.getDate());
+})();
+const scopeCard = await evalJs(`(() => {
+  ${PICK_FRAME}
+  const el = f.contentDocument.querySelector('#panel-export .card-foot .asof');
+  return el ? el.textContent : null;
+})()`);
+ok('导出卡片写的是「2025秋至 <今天>」（不再是「数据截至」）',
+  scopeCard === '2025秋至 ' + todayDot, `${scopeCard}（期望 2025秋至 ${todayDot}）`);
 
 /* ── 4. 宿主滚动 + 组件内交互状态（这两条是补上的回归）────────────
  * 两个都真实出过事故，而且**只靠肉眼看渲染结果是发现不了的**：
@@ -426,6 +502,15 @@ ok('足迹里展开一条感想后它保持展开', noteCheck.open === 1 && note
 consoleErrors.length = 0;
 await open(`${BASE}/?still=1`, 7000);
 await waitForFrame();
+/* 入口页（查询界面）必须体现时间口径「2025秋至 <今天>」 */
+const entryScope = await evalJs(`(() => {
+  ${PICK_FRAME}
+  const el = f.contentDocument.getElementById('scopeLine');
+  return el ? el.textContent : null;
+})()`);
+ok('查询界面（入口页）写明了收录范围「2025秋至 <今天>」',
+  !!entryScope && entryScope.indexOf('2025秋') >= 0 && entryScope.indexOf(todayDot) >= 0,
+  String(entryScope));
 await evalJs(`(() => {
   ${PICK_FRAME}
   const d = f.contentDocument;

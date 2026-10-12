@@ -86,9 +86,18 @@ def test_index_does_not_statically_load_the_demo_database():
 
 
 def test_index_loads_the_three_runtime_scripts_in_order():
+    """三个脚本必须都在，且顺序是 derive → bridge → app（后者依赖前者）。
+
+    只认 ``src="…"`` —— 别用裸 ``find("app.js")``：HTML 注释里提一句文件名
+    就会把顺序判错（真实踩过：一句「由 app.js 填」把 app.js 的位置提前到注释处）。
+    """
     html = _read(INDEX)
-    order = [html.find("data/derive.js"), html.find("data/bridge.js"), html.find("app.js")]
-    assert all(i >= 0 for i in order), f"index.html 必须引用三个脚本，实际 {order}"
+    order = [
+        html.find('src="data/derive.js'),
+        html.find('src="data/bridge.js'),
+        html.find('src="app.js'),
+    ]
+    assert all(i >= 0 for i in order), f"index.html 必须用 src= 引用三个脚本，实际 {order}"
     assert order == sorted(order), "脚本顺序必须是 derive → bridge → app（后者依赖前者）"
 
 

@@ -121,12 +121,25 @@ def test_term_is_four_digit_year_plus_season():
     assert m and m.group(1) == "2025", f"term 必须是四位年份 + 季节，实际 {term!r}"
 
 
-def test_term_fallback_is_still_a_string_and_does_not_fake_a_year():
-    """学期缺失时给占位词，**不能**编一个四位年份出来（那会凭空造出一个学年）。"""
-    p = P.build_payload(_result([_participation(term=None)]))
-    term = p["member"]["activities"][0]["term"]
+def test_term_fallback_never_fabricates_a_year():
+    """学期回退的**两条**边界，合起来保证「年份要么来自骨干、要么来自记录本身」。
+
+    * 表名/文件夹名给不出学期、记录也**没有**明确活动日期 → 占位词。
+      **不能**编一个四位年份出来（那会凭空造出一个学年）。
+    * 有明确活动日期 → 按 9–次年2 为秋、3–8 为春归入，年份必须能追溯到那条记录。
+
+    回退的完整口径与分界表见 ``tests/test_term_from_date.py``。
+    """
+    no_date = P.build_payload(_result([_participation(term=None, event_time_ms=None)]))
+    term = no_date["member"]["activities"][0]["term"]
     assert term == P.UNKNOWN_TERM
     assert not TERM_RE.match(term), "占位词不能被当年份解析"
+
+    # 有日期时给出可追溯的学期；2023-09-01 属于 2023 秋
+    dated = P.build_payload(_result([_participation(term=None)]))
+    derived = dated["member"]["activities"][0]["term"]
+    assert derived == "2023秋"
+    assert TERM_RE.match(derived), "回退出来的学期也必须是四位年份 + 季节"
 
 
 def test_hours_is_a_number_not_a_string():

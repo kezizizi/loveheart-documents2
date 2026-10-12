@@ -105,14 +105,19 @@ a { color: inherit; }
    纹理是一层次要叠加，不是页面底色 —— 直接当底色平铺会变成「皱牛皮纸」，
    压住正文并露出接缝。fixed 层 + multiply，正文永远在它上面。 */
 body:before { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background-image: url('assets/paper-grain.jpg?v=20261013c');
+  background-image: url('assets/paper-grain.jpg?v=20261013e');
   background-size: 512px 512px; opacity: .15; mix-blend-mode: multiply; }
 
 /* ── 入口 ───────────────────────────────────────────── */
 .entry { padding: 56px 0 0; max-width: 520px; }
 .entry h1 { font-family: var(--serif); font-size: 30px; font-weight: 600;
   letter-spacing: .04em; margin: 0 0 8px; }
-.entry .sub { margin: 0 0 30px; color: var(--ink-2); font-size: 13.5px; }
+.entry .sub { margin: 0 0 10px; color: var(--ink-2); font-size: 13.5px; }
+/* 收录范围：2025秋至 <今天>。细等宽字，压在主说明下面一行，不抢视线。
+   内容由 app.js 填（今天要动态生成），见 derive.js::SCOPE_FROM。 */
+.entry .scope { margin: 0 0 30px; font-family: var(--mono); font-size: 11.5px;
+  letter-spacing: .1em; color: var(--ink-3); }
+.entry .scope:empty { margin: 0 0 30px; }
 .form { display: grid; gap: 16px; }
 .field { display: grid; gap: 6px; }
 .field .k { font-size: 11.5px; letter-spacing: .24em; color: var(--ink-3); }
@@ -473,6 +478,9 @@ body:before { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events
   background: var(--ink); color: var(--paper);
 }
 .card-actions .hint { font-size: 11.5px; color: var(--ink-3); flex: 1 1 220px; }
+/* 导出 PNG 的进度 / 失败提示走这里，**不要**用顶部的 notice 面板：
+   那是「查不到档案」的位置，拿它报「图片生成失败」会把人吓一跳。 */
+.card-actions .hint.err { color: var(--accent); }
 
 /* ── 一次性动效：只服务层级，不循环、不粘滚动 ──────── */
 @keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
@@ -536,22 +544,14 @@ body.still *, body.still *:before, body.still *:after { animation: none !importa
   .card-foot .qr { width: 62px; height: 62px; }
 }
 
-/* ── 打印：任何视图下都只出卡片 ─────────────────────── */
-@media print {
-  @page { size: A4 portrait; margin: 8mm; }
-  body { background: #fff; }
-  .brandbar, .entry, .loading, .notice, .ident, .views, .degraded,
-  .card-actions, .foot { display: none !important; }
-  .app { max-width: none; padding: 0; }
-  /* 关键：卡片面板在别的视图下带着 hidden，必须强制显示，否则打印出白纸 */
-  .panel { display: none !important; }
-  #panel-export { display: block !important; }
-  /* 卡片靠缩放 + 收紧行距落在一页内。
-     栏图换成 1362×632 之后卡片变高了（旧插画是 1600×460 的窄条），
-     所以 zoom 从 .86 下调到 .72 —— 实测这样仍是 1 页。 */
-  .card { border: 0; max-width: 452px; margin: 0 auto; zoom: .72; }
-  .card-head h2 { text-shadow: none; }
-  .card-stats .stat { padding: 12px 8px 11px; }
-  .crow { padding: 3.5px 0; }
-  .card-foot { padding: 12px 22px 14px; }
+/* ── 导出快照（PNG）────────────────────────────────────
+   导出图是在浏览器里把 .card 拍成位图的（见 app.js::snapshotCard）。
+   拍之前给克隆节点加 .snapping，把动画与过渡钉死在终态 ——
+   卡片元素带 anim-rise（opacity 从 0 开始），快照若赶在动画中途就会拍到半透明的卡。
+   注意这条**不是** @media print：打印/PDF 那条路已经删掉了。 */
+.snapping, .snapping *, .snapping *:before, .snapping *:after {
+  animation: none !important; transition: none !important;
 }
+.snapping .anim-rise, .snapping .anim-fade { opacity: 1 !important; transform: none !important; }
+/* 快照里不需要交互态的残留（悬停高亮、焦点环） */
+.snapping .card-list h3:before { opacity: 1; }

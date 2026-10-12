@@ -20,7 +20,7 @@
 
   /* 资源版本号：只要改了任何图片或样式就必须推进它，否则浏览器旧缓存会盖住修改。
      ⚠️ 这里的值必须与 index.html / app.js / style.css 里的 `?v=` 保持一致。 */
-  var ASSET_V = '20261013c';
+  var ASSET_V = '20261013e';
 
   /* 社团固定 9 个部组。注意：它【不是】用来判定某条记录属于哪个部组的 ——
      判定权在后端 config.GROUP_COLORS（交接文档 §3.3 / §3.6）。前端保留这份清单
@@ -183,8 +183,32 @@
     return copy;
   }
 
+  /* ── 时间口径 ─────────────────────────────────────────
+     「爱心足迹」收录的是 SCOPE_FROM 起、到**今天**为止的活动。
+     起点写成学期（2025秋）而不是自然年 —— 学年是从秋季学期开始的。
+     这里是全站**唯一**一份口径：入口页与导出图都读它，
+     免得两处各写一个日期、改一处忘一处。 */
+  var SCOPE_FROM = '2025秋';
+
+  /* 今天的**本地**日期（YYYY-MM-DD）。
+     ⚠️ 不能用 toISOString().slice(0,10)：那是 UTC，北京时间 0:00–8:00 之间
+     会算成前一天，于是「至（今天）」会平白少一天。 */
+  function todayIso(now) {
+    var d = now || new Date();
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+  }
+
+  /* 「2025秋至 2026.10.12」—— 入口页与导出卡片共用同一个字符串 */
+  function scopeText(now) {
+    return SCOPE_FROM + '至 ' + todayIso(now).replace(/-/g, '.');
+  }
+
   global.AX_DERIVE = {
     ASSET_V: ASSET_V,
+    SCOPE_FROM: SCOPE_FROM,
+    todayIso: todayIso,
+    scopeText: scopeText,
     KNOWN_GROUPS: KNOWN_GROUPS,
     UNKNOWN_GROUP: UNKNOWN_GROUP,
     GROUP_MARK: GROUP_MARK,

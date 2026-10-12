@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from config import BEFORE_ALL_TERMS
+from config import BEFORE_ALL_TERMS, term_from_date
 from feishu import schema as S
 from feishu.models import MembershipDate
 from services.identity import MergedMember
@@ -44,6 +44,18 @@ def days_since(ms: int | None, *, now: datetime | None = None) -> int | None:
         return None
     today = now or datetime.now()
     return (today.date() - _to_local_datetime(ms).date()).days
+
+
+def term_from_ms(ms: int | None) -> str | None:
+    """活动时间戳 → 学期（``2025秋``）。
+
+    按**北京时间**取年月，再套 ``config.term_from_date`` 的学年口径。
+    只在表名/文件夹名给不出学期时用于回退（见 ``ui/payload._activity``）。
+    """
+    if not ms:
+        return None
+    local = _to_local_datetime(ms)
+    return term_from_date(local.year, local.month)
 
 
 def derive_membership_date(member: MergedMember) -> MembershipDate:

@@ -32,7 +32,7 @@ from feishu.member_query import (
     MemberQueryResult,
 )
 from feishu.models import Participation
-from services.membership_date import derive_membership_date, format_date
+from services.membership_date import derive_membership_date, format_date, term_from_ms
 
 # 前端自带的五种状态 + 一种「我们这边没查成」
 STATUS_OK = "OK"
@@ -72,9 +72,14 @@ def _text(raw: Any) -> str:
 
 
 def _activity(p: Participation) -> dict[str, Any]:
+    # 学期：**表名 / 文件夹名优先**（`p.term` 由注册表从那里推出来，是骨干维护的事实）。
+    # 它们给不出学期时，才按**活动日期**归入对应学期（9–次年2 为秋、3–8 为春）。
+    # 只认 event_time_ms（明确的参与时间），**不**回退 record_created_ms ——
+    # 批量导入的创建时间是导入那一刻，拿它推学期会把旧活动算进新学年。
+    term = p.term or term_from_ms(p.event_time_ms) or UNKNOWN_TERM
     return {
         "name": p.activity_name or "",
-        "term": p.term or UNKNOWN_TERM,
+        "term": term,
         "group": p.group or UNKNOWN_GROUP_LABEL,
         # 必须是数字而不是字符串：前端直接调 toFixed(1)
         "hours": float(round(p.hours, 1)),

@@ -848,8 +848,8 @@ iframe{width:900px;height:400px;border:1px solid #ccc;position:absolute;left:-99
        几何比对前必须先切到导出视图 —— 面板 hidden 时 rect 全是 0，比对会恒真
        （我第一版就量出了 0.0 vs 0.0 这种「通过」）。 */
     doc.querySelectorAll('.views button')[2].click();
-    ok('打印与下载 CSV 两个控件样式一致', (function () {
-      var pb = doc.querySelector('#panel-export #print');
+    ok('导出 PNG 与下载 CSV 两个控件样式一致', (function () {
+      var pb = doc.querySelector('#panel-export #pngBtn');
       var cs = doc.querySelector('#panel-export #csvBtn');
       if (!pb || !cs) return false;
       var a = win.getComputedStyle(pb), b = win.getComputedStyle(cs);
@@ -865,7 +865,7 @@ iframe{width:900px;height:400px;border:1px solid #ccc;position:absolute;left:-99
       return diffs.length === 0;
     })(), win.__btnDbg);
     ok('两个动作控件同高（几何一致）', (function () {
-      var rb = doc.querySelector('#panel-export #print').getBoundingClientRect();
+      var rb = doc.querySelector('#panel-export #pngBtn').getBoundingClientRect();
       var rc = doc.querySelector('#panel-export #csvBtn').getBoundingClientRect();
       win.__btnGeo = '高 ' + rb.height.toFixed(1) + ' vs ' + rc.height.toFixed(1) +
         '，顶 ' + rb.top.toFixed(1) + ' vs ' + rc.top.toFixed(1);

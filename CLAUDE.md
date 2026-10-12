@@ -10,7 +10,7 @@
 ## 1. 一句话定位
 
 北京大学学生爱心社的社员活动记录查询系统。社员输入**姓名 + 学号**，得到自己跨两个学年库  
-的完整足迹：活动时间轴、部组分布、感想，以及可导出的 CSV 与一张可分享的卡片。
+的完整足迹：活动时间轴、部组分布、感想，以及可导出的 CSV 与一张可分享的 PNG 长图。
 
 技术栈：**Streamlit（外壳 + 查数） + 零依赖静态前端（界面本体） + 飞书多维表格 Base（数据源）**。
 
@@ -48,9 +48,9 @@
 
 | 指标 | 值 |
 | --- | --- |
-| Python 测试 | **199 项**，全绿，不触网、不需密钥 |
+| Python 测试 | **235 项**，全绿，不触网、不需密钥 |
 | 前端自检 | **156 项**，在真实浏览器里跑（`static/_work/run-selftest.mjs`）；该脚本另做 **3 项独立形态交互回归** |
-| Streamlit 端到端验收 | **56 项**（`static/_work/e2e-streamlit.mjs`） |
+| Streamlit 端到端验收 | **63 项**（`static/_work/e2e-streamlit.mjs`） |
 | 自动发现的活动问卷表 | **171 张**（25-26 学年 125 + 26-27 学年 46） |
 | 注册表构建耗时 | 约 13 秒（约 175 次 API 请求） |
 | 单次社员查询 | 约 5 秒（**开同行伙伴后约翻倍请求量**，见 3.11） |
@@ -248,6 +248,33 @@ Streamlit 会在**组件元素自身重排**时重发 `streamlit:render` —— 
 页面永远停在「正在翻阅你的档案…」（真实发生过，`run-selftest.mjs` 里那 3 项守着）。  
 守卫：`e2e-streamlit.mjs` 的「点开部组后保持展开」「展开感想后保持展开」「同一个人再查一次」。
 
+### 3.15 导出 PNG 走 SVG 快照：**必须是 XML，不是 HTML**
+
+导出长图（PNG）是把屏幕上那张卡片原样拍成位图（`app.js::snapshotCard`），
+而不是用 canvas 重画一遍 —— 重画等于给版式写第二份实现，改样式时两边必然漂移。
+管线：克隆 `.card` → `<img>` 换 data URI → 取样式表里非媒体查询的规则 → SVG foreignObject
+→ canvas → `toBlob('image/png')`。
+
+四条不能省（前两条各烧掉半小时，症状都只有一句「快照渲染失败」）：
+
+1. **克隆节点用 `XMLSerializer`，绝不用 `outerHTML`。** SVG 走 `<img>` 加载时按 **XML**
+   解析，而 `outerHTML` 是 HTML 序列化：`<img>` 不会自闭合，于是整个 SVG 解析失败，
+   回调只有 `img.onerror`，**看不出任何原因**。`XMLSerializer` 还会补上
+   `xmlns="http://www.w3.org/1999/xhtml"`，foreignObject 正需要它。
+2. **样式文本与内联 `style` 属性都要 XML 转义。** CSS 里可能有 `<` / `&`；而 computed 的
+   `font-family` 带**双引号**，直接塞进 `style="…"` 会把属性截断。
+3. **`@media` 规则必须丢掉。** 渲染成位图时媒体查询按 SVG 自己的宽度求值，
+   540px 会命中手机版样式。所以 `collectCss()` 只收 `rule.type === 1`。
+4. **`body` 的继承属性要显式搬到快照根节点。** `<style>` 按 SVG 文档生效，那里没有 `body`，
+   卡片就继承不到字体与文字颜色（会变成 Times 黑字）。
+
+另外：克隆节点要加 `.snapping` 把动效钉死在终态，否则可能拍到 `anim-rise` 中途的半透明卡；
+canvas 先铺白底（PNG 透明区在相册里会显示成黑块）。
+
+**不许用 `window.print()` 代替它** —— 打印/存 PDF 那条路已按用户要求删除
+（`@media print` 与 `#print` 按钮都已移除），守卫是 `e2e-streamlit.mjs` 里
+「不再有打印按钮」那一条。产物真伪由三条断言钉住：MIME、PNG 魔数、能被解码成正尺寸。
+
 ---
 
 ## 4. 数据流与分层
@@ -315,8 +342,8 @@ ui/  ── 表现层
 
 static/web/  ── 组件根目录（**会被 HTTP 公开**，只放运行期文件）
   index.html                入口骨架：品牌栏、入口表单、加载/提示区、三个视图面板
-  style.css                 全部样式：设计令牌、三视图、打印样式、动效
-  app.js                    全部渲染逻辑：视图、时间轴曲线、交互、CSV、打印
+  style.css                 全部样式：设计令牌、三视图、导出快照、动效
+  app.js                    全部渲染逻辑：视图、时间轴曲线、交互、导出 PNG 长图与 CSV
   data/derive.js            **唯一**一份派生实现（stats/groups/terms/years）+ 徽记路径
   data/bridge.js            **唯一**数据通道：组件形态 / 独立形态、高度上报、形态判据
   data/mock-db.js           演示用假数据库。**只在独立形态动态加载**（见 3.7）
@@ -330,7 +357,7 @@ static/_work/  ── 开发与验证工具（同样不会被公开）
   e2e-streamlit.mjs         Streamlit 端到端验收 + 逐视图截图
   selftest.html             156 项前端回归断言（在真实浏览器里驱动 web/index.html）
   serve.py                  静态服务器（对所有响应发 no-store）
-  pdfcheck.py / shot.ps1 / phone-shot.ps1 / measure*.html   打印差分与截图工具
+  shot.ps1 / phone-shot.ps1 / measure*.html                 截图与量高工具
 
 docs/                       设计源文件、飞书结构分析报告，以及工程类 skill 的仓库配置
   ├ 爱心社社员档案_飞书多维表格结构分析.md   ← 想了解 Base 的真实结构看这份
@@ -339,7 +366,7 @@ docs/                       设计源文件、飞书结构分析报告，以及�
       ├ triage-labels.md    五个 triage 角色 ↔ 实际标签字符串
       └ domain.md           领域文档放哪、怎么用它的词汇
 scripts/verify_live.py      真实接口联调自检（用真实密钥，只打印结论不做断言）
-tests/                      199 项单元测试 + 录制的 JSON fixture（blocks/fields/records）
+tests/                      235 项单元测试 + 录制的 JSON fixture（blocks/fields/records）
 .github/workflows/ci.yml    跑测试 + 密钥泄漏扫描
 ```
 
@@ -353,7 +380,7 @@ tests/                      199 项单元测试 + 录制的 JSON fixture（block
 | 活动表识别 | Block 树里的 table 且**有 link 字段指回主表**；排除主表自身、`FORBIDDEN_TABLE_IDS`、模板/反馈渠道类表名 |
 | 活动名 | 剥掉「反馈、学时问卷」「问卷」「副本」「-结果分析」等后缀（`config.ACTIVITY_NAME_SUFFIXES`） |
 | 部组 | 表格在 Base 里的**文件夹归属**；只认 9 个已知部组，其余归「其他」；前端不再二次判定 |
-| 学期 | 由文件夹名或表名里的「2025秋 / 26春 / 暑假」推导，统一成四位年份 + 季节；缺失时发 `未标注学期`（**不能编四位年份**，那会凭空造出一个学年） |
+| 学期 | **三级**：① 文件夹名或表名里的「2025秋 / 26春 / 暑假」（骨干维护的事实，优先）；② 两者都给不出时，按**活动日期**归入 —— 9–12 月＝当年秋、1–2 月＝**上一年**秋（秋季学期跨年）、3–8 月＝当年春（`config.term_from_date`）；③ 连活动日期都没有 → `未标注学期`。统一成四位年份 + 季节，**永远不编**年份（见 `tests/test_term_from_date.py` 的分界表） |
 | 入社日期 | 两库全部记录取最早：优先「入社日期」字段真实值（25-26 库有）→ `joinDateSource = "filled"`；缺该字段则回退 **Base 记录 `created_time`** → `"created"`；都没有 → `joinDate = null` / `"none"`（前端显示「—」）。⚠️ 批量导入的行 created_time 是导入时刻，可能晚于实际入社时间 |
 | 志愿学时 | 字段名不统一（志愿时长 / 志愿学时 / 工时），按 `HOURS_RE` 正则探测；同条记录多个学时字段则**求和** |
 | 参与时间 | 字段名更野（参与时间 / 填写日期 / 签到时间），`TIME_RE` 同时认「时间」与「日期」；`TIME_STRONG_HINTS` 排序 |
@@ -362,7 +389,7 @@ tests/                      199 项单元测试 + 录制的 JSON fixture（block
 | 置信度 | 取数只走关联后**恒为 high**；`medium` / `low` 是历史遗留。前端 CSV **已不再输出**「置信度」列（恒定的列没有信息量） |
 | 同行伙伴 | 每张相关表扫一次姓名列，上限 `CO_PARTNER_CAP = 30` 张；人数按姓名去重、排除本人；**只出人数不出姓名**；统计不到发 `null` |
 | 缓存 | 注册表 24 小时（**全局共用**）；单次查询结果 10 分钟 |
-| 海报 | **已删除**（`services/poster.py` 与服务端 Pillow 拼版）。导出改成前端 HTML 卡片 + 浏览器打印/存 PDF |
+| 导出物 | 前端 HTML 卡片 → **PNG 长图**（浏览器内快照，见红线 3.15）+ CSV。服务端海报（`services/poster.py` / Pillow）**已删除**；**打印/存 PDF 那条路也已删除** |
 
 ---
 
@@ -421,7 +448,7 @@ AX_DEMO=1 "C:/Users/gzk16/AppData/Local/Programs/Python/Python39/python.exe" -m 
 # 前端回归：156 项断言 + 3 项独立形态交互回归，自带静态服务器与一次性浏览器 profile
 node static/_work/run-selftest.mjs
 
-# Streamlit 端到端：先起 Streamlit，再跑（56 项 + 逐视图截图）
+# Streamlit 端到端：先起 Streamlit，再跑（63 项 + 逐视图截图）
 AX_DEMO=1 python -m streamlit run app.py --server.headless true --server.port 8602
 node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
 ```
@@ -434,7 +461,7 @@ node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
 > （不开的话 `el.focus()` 不派发 focus 事件，「键盘聚焦圆点等价于悬停」那条会在  
 > **完全未改动的原版前端上同样失败**）。
 
-**写前端回归时最容易骗到自己的五件事**（都真实踩过，脚本里都有对应处理）：
+**写前端回归时最容易骗到自己的六件事**（都真实踩过，脚本里都有对应处理）：
 
 1. **抓到隐藏的旧组件框。** Streamlit 重跑时会短暂留下一个隐藏 iframe，里面 DOM 齐全但  
    没有布局盒，`el.click()` 与真实交互都不生效。选择器必须挑 `clientHeight > 0` 的那个。
@@ -448,6 +475,9 @@ node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
 5. **用 `Input.dispatchMouseEvent('mouseWheel')` 测滚轮。** 无头下它**派发不到任何元素**  
    （位移恒为 0）；改用 `Input.synthesizeScrollGesture`，它真的走 Chrome 的滚动链  
    （实测位移 549px）。
+6. **拿粗糙的像素统计下结论。** 我按「暗红像素 > 20 的行就是红带」扫导出图，
+   扫出一条「不存在的全宽红带」并差点去改样式 —— 实际那几行是**红色标语文字**被算进去了。
+   要判定视觉异常就裁剪放大**看一眼**，别只看自己写的统计量。
 
 浏览器扩展也会往控制台吐 `Could not establish connection` 之类的错，那是扩展的噪音、  
 不是页面的问题 —— 两个脚本都用 `--disable-extensions` 关掉了。
@@ -583,6 +613,9 @@ main_table_id = "「社员档案」主表的 table_id"
 | 改补录问卷链接 | `config.SUPPLEMENT_FORM_URL`（当前前端文案里未使用，属待办） |
 | 改活动名清洗规则 | `config.clean_activity_name` + `ACTIVITY_NAME_SUFFIXES` |
 | 改同行伙伴逻辑 | `feishu/member_query.py` 的 `scan_table_names` / `collect_records` |
+| 改学期回退口径（哪几个月算秋/春） | `config.term_from_date` + `tests/test_term_from_date.py` 的分界表 |
+| 改导出长图的外观 | `static/web/app.js` 的 `renderCard`（版式只有一份，PNG 是它的快照） |
+| 改收录时间范围（起点/终点） | `static/web/data/derive.js` 的 `SCOPE_FROM` / `scopeText` |
 | 改缓存时长 | `config.DEFAULT_REGISTRY_TTL` / `DEFAULT_MEMBER_TTL`（或 secrets） |
 | 新增可查询字段 | `config.MEMBER_READ_WHITELIST`（记得同步隐私清单与测试） |
 
@@ -625,8 +658,8 @@ main_table_id = "「社员档案」主表的 table_id"
 - 活动名清洗还能更好（如「9月20日无障碍部迎新会反馈」尾部「反馈」未剥净，  
   与「2025星空」类命名风格不一致）。
 - `search_records` 的 `limit` 在旧版回退路径被忽略（会全量返回），不影响正确性，只影响速度。
-- 前端在设计阶段验证过的**打印差分**（三视图各 1 页 A4）用的是独立形态；  
-  组件形态下只验证了「确实调用了 `window.print`」，没有栅格化检查打印质量。
+- 导出 PNG 用的是 SVG foreignObject 快照：**只在 Chromium 内核上验证过**（含逐张人眼复核）。  
+  Safari / 微信内置浏览器没试过（foreignObject 在非 Chromium 内核上的表现未验证）。
 - `?degraded=1` 与 `?delay=` 只在**独立形态**有意义（组件形态下 `degraded` 由后端如实给出）。
 
 **未完成**
