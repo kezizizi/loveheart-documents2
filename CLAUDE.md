@@ -49,8 +49,8 @@
 | 指标 | 值 |
 | --- | --- |
 | Python 测试 | **199 项**，全绿，不触网、不需密钥 |
-| 前端自检 | **156 项**，在真实浏览器里跑（`static/_work/run-selftest.mjs`） |
-| Streamlit 端到端验收 | **55 项**（`static/_work/e2e-streamlit.mjs`） |
+| 前端自检 | **156 项**，在真实浏览器里跑（`static/_work/run-selftest.mjs`）；该脚本另做 **3 项独立形态交互回归** |
+| Streamlit 端到端验收 | **56 项**（`static/_work/e2e-streamlit.mjs`） |
 | 自动发现的活动问卷表 | **171 张**（25-26 学年 125 + 26-27 学年 46） |
 | 注册表构建耗时 | 约 13 秒（约 175 次 API 请求） |
 | 单次社员查询 | 约 5 秒（**开同行伙伴后约翻倍请求量**，见 3.11） |
@@ -244,7 +244,9 @@ Streamlit 会在**组件元素自身重排**时重发 `streamlit:render` —— 
 2. 否则，载荷与上一次**完全一样** → 认定为自发重渲染，什么都不做。
 
 只看第 2 条会坏在「同一个人连查两次」：载荷一模一样，但那一次**必须**重新渲染。  
-守卫：`e2e-streamlit.mjs` 的「点开部组后保持展开」「展开感想后保持展开」。
+**两种形态都要记**这条「用户刚提交的查询」：只在组件形态记会坏在独立形态 ——  
+页面永远停在「正在翻阅你的档案…」（真实发生过，`run-selftest.mjs` 里那 3 项守着）。  
+守卫：`e2e-streamlit.mjs` 的「点开部组后保持展开」「展开感想后保持展开」「同一个人再查一次」。
 
 ---
 
@@ -416,10 +418,10 @@ AX_DEMO=1 "C:/Users/gzk16/AppData/Local/Programs/Python/Python39/python.exe" -m 
 ### 8.3 前端自检与端到端验收（**别靠肉眼**）
 
 ```bash
-# 前端回归：156 项断言，自带静态服务器与一次性浏览器 profile，跑完自动清理
+# 前端回归：156 项断言 + 3 项独立形态交互回归，自带静态服务器与一次性浏览器 profile
 node static/_work/run-selftest.mjs
 
-# Streamlit 端到端：先起 Streamlit，再跑（55 项 + 逐视图截图）
+# Streamlit 端到端：先起 Streamlit，再跑（56 项 + 逐视图截图）
 AX_DEMO=1 python -m streamlit run app.py --server.headless true --server.port 8602
 node static/_work/e2e-streamlit.mjs http://127.0.0.1:8602 static/_work/e2e-shots
 ```

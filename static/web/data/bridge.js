@@ -142,8 +142,12 @@
   }
 
   function query(name, sid) {
+    /* ⚠️ 两种形态都要记下「这是用户主动发起的一次查询」。
+       只在组件分支里记会坏在独立形态：同一个人连查两次时载荷一模一样，
+       app.js 的去重守卫会把它当成自发重渲染而丢掉，页面就永远停在「正在翻阅…」。 */
+    pendingQuery = identityOf(name, sid);
+
     if (component) {
-      pendingQuery = identityOf(name, sid);
       /* nonce 不可省：Streamlit 把组件当控件，值没变就不会重跑。
          同一个人连查两次（点了「重新查询」再提交相同姓名学号）会被吞掉。 */
       seq += 1;

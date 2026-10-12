@@ -213,7 +213,7 @@
         '<p class="ask">这一天，你的心情是怎样的呢？</p>' +
         (m.joinMessage ? '<blockquote class="joinmsg">' + esc(m.joinMessage) + '</blockquote>' : '') +
       '</div></div>' +
-      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013b" alt=""></div></div>';
+      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013c" alt=""></div></div>';
 
     r.years.forEach(function (y) {
       h += '<div class="yhead"><span class="yn">' + esc(y.year) + ' 学年</span></div>';
@@ -703,8 +703,8 @@
 
     h += '<div class="card-head">' +
       /* 栏图整幅显示：不加遮罩、不裁切、上面不压任何东西。
-         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013b）并放到卡片右下角。 */
-      '<img class="art" src="assets/export-banner.jpg?v=20261013b" alt="">' +
+         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013c）并放到卡片右下角。 */
+      '<img class="art" src="assets/export-banner.jpg?v=20261013c" alt="">' +
       '<div class="tit"><h2>' + esc(m.name) + '的爱心足迹</h2>' +
       '<div class="when">' + dotd(m.joinDate) + ' 入社</div></div>' +
       '</div>';
@@ -731,11 +731,11 @@
 
     h += '<div class="card-foot">' +
       /* 左下角的社团三字图（用户提供）；文字全部移到中列，不会被它压住 */
-      '<img class="sealimg" src="assets/club-seal.png?v=20261013b" alt="">' +
+      '<img class="sealimg" src="assets/club-seal.png?v=20261013c" alt="">' +
       '<div class="motto">奉献爱心，呼唤爱心，自我教育</div>' +
       '<div class="org">北京大学学生爱心社</div>' +
       '<div class="asof">数据截至 ' + dotd(new Date().toISOString().slice(0, 10)) + '</div>' +
-      '<div class="qr"><img src="assets/export-qr.png?v=20261013b" alt="爱心社关注二维码"></div>' +
+      '<div class="qr"><img src="assets/export-qr.png?v=20261013c" alt="爱心社关注二维码"></div>' +
       '</div>';
 
     h += '</div>';

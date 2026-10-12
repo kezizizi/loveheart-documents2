@@ -105,7 +105,7 @@ a { color: inherit; }
    纹理是一层次要叠加，不是页面底色 —— 直接当底色平铺会变成「皱牛皮纸」，
    压住正文并露出接缝。fixed 层 + multiply，正文永远在它上面。 */
 body:before { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background-image: url('assets/paper-grain.jpg?v=20261013b');
+  background-image: url('assets/paper-grain.jpg?v=20261013c');
   background-size: 512px 512px; opacity: .15; mix-blend-mode: multiply; }
 
 /* ── 入口 ───────────────────────────────────────────── */

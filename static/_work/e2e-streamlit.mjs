@@ -442,6 +442,27 @@ ok('提交后 URL 带上了查询参数（结果可刷新/可分享）',
 ok('提交过程无 JS 异常', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | '));
 await shot('04-submitted');
 
+/* 回入口页再提交**同一个人** —— 这是去重守卫最容易出错的那一格：
+   载荷与上一次一模一样，但那一次必须重新渲染，不能卡在加载态。 */
+await evalJs(`(() => {
+  ${PICK_FRAME}
+  f.contentDocument.getElementById('again').click();
+  return 'ok';
+})()`);
+await sleep(600);
+await evalJs(`(() => {
+  ${PICK_FRAME}
+  const d = f.contentDocument;
+  d.querySelector('input[name=name]').value = '张三';
+  d.querySelector('input[name=sid]').value = '2300017473';
+  d.querySelector('#form button[type=submit]').click();
+  return 'submitted';
+})()`);
+await sleep(6000);
+p = await waitForFrame(20000, false);
+ok('同一个人再查一次仍然出结果（不会卡在加载态）',
+  p.resultShown && p.name === '张三', `result=${p.resultShown} loading=${p.loading} name=${p.name}`);
+
 browser.kill();
 try { rmSync(profile, { recursive: true, force: true }); } catch { /* 占用中，交给系统清理 */ }
 console.log('');
