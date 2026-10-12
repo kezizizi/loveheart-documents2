@@ -1,0 +1,557 @@
+/* 爱心社「爱心足迹」—— 统一设计令牌
+ *
+ * 一条硬约束贯穿全表：任何视图都不得突出「志愿学时」。
+ * 学时是与日期同级的一个记录字段（灰色、小号、右对齐），不是分数，
+ * 也不在任何主视图里求和展示。主指标是「在社天数 / 参与场次 / 涉及部组 / 同行伙伴」。
+ *
+ * 强调色只有一个（爱心社绛红），来源为社方海报品牌红 #840923。
+ * 不需要九色部组配色：部组靠位置、字重和段落结构区分。
+ */
+
+:root {
+  --paper: #fbfaf7;
+  --paper-2: #f4f2ec;
+  --ink: #17181a;
+  --ink-2: #4e5359;
+  /* ink-3 用在日期/学时/笔数这类「信息性小字」上，必须过 WCAG AA。
+     原值 #8d939a 对纸色只有 2.97:1，不达标；#6a7078 为 4.79:1。 */
+  --ink-3: #6a7078;
+  --rule: #e4e1d9;
+  --rule-2: #cdc9bf;
+  --accent: #840923;
+  --accent-soft: rgba(132, 9, 35, .1);
+  /* 牛皮纸：档案视图的「材料」底色。它是纸的色调，不是第二个强调色 ——
+     饱和度刻意压得很低，只用来让档案头像一张贴上去的标签。 */
+  --kraft: #ece4cf;
+  --kraft-2: #e0d5b8;
+  --kraft-line: #cbbd9c;
+
+  /* 字体统一（用户指定）：中文一律 华文中宋；数字与拉丁一律 Times New Roman；
+     感想保持楷体。
+     实现要点：把 'Times New Roman' 放在字体栈【最前面】。TNR 没有中文字形，
+     浏览器会逐字回退到后面的华文中宋 —— 于是同一段文本里数字自动走 TNR、
+     中文自动走华文中宋，一处定义全局生效，不必逐个元素去拆。
+     TNR 的数字本身是等宽（tabular），原有对齐不会散。
+     （华文中宋随 Office/Windows 分发，没有网页嵌入授权，所以只按名引用、绝不打包 woff；
+      没有它的环境回退 Noto Serif SC / 思源宋体，SIL OFL 1.1，可合法嵌入。） */
+  --serif: 'Times New Roman', '华文中宋', 'STZhongsong', 'Noto Serif SC',
+    'Source Han Serif SC', 'Noto Serif CJK SC', '华文宋体', 'Songti SC', SimSun, serif;
+  --sans: 'Times New Roman', '华文中宋', 'Noto Serif SC', 'Source Han Serif SC',
+    '华文宋体', 'Songti SC', SimSun, serif;
+  /* 楷体：原来栈里写的是 KaiTi / STKaiti，这两个在本机都不存在，
+     于是「感想」一路静默回退成宋体 —— 等于这一层字体层次从来没生效过。 */
+  --kai: '楷体', '华文楷体', 'KaiTi', 'STKaiti', 'Noto Serif SC', serif;
+  --mono: 'Times New Roman', '华文中宋', 'Noto Serif SC', '华文宋体', 'Songti SC',
+    SimSun, serif;
+
+  --gut: 112px;     /* 时间栏 */
+  /* 圆点栏 34px：活动圆点同时是一个 34px 的按钮（触摸目标不能只有 7px），
+     圆心落在栏中心；曲线用同一个值算横坐标，所以圆圈永远贴在曲线上。 */
+  --node: 34px;
+  --cum: 132px;     /* 累计场次轨道 */
+  --cum-n: 34px;    /* 累计场次数字 */
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+/* 小号 + 宽字距的标签统一走黑体：华文中宋在这个尺寸下会显脏，层次也会塌。
+   正文与标题走宋体、数字与日期走等宽 —— 三级层次各自有明确归属。 */
+.brandbar .brand, .field .k, .ident .stats .k, .card-stats .k,
+.loading .n, .card-actions .hint, .entry .sub, .notice li, .degraded {
+  font-family: var(--sans);
+}
+body {
+  background: var(--paper); color: var(--ink);
+  /* 正文主体改用华文中宋；小号字距标签仍走黑体、数字仍走等宽，
+     这样「宋体正文 / 黑体小标签 / 等宽数字」三级层次是清楚的 */
+  font-family: var(--serif); font-size: 15px; line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; cursor: pointer; }
+a { color: inherit; }
+
+/* 键盘可见焦点：只用 :focus-visible，鼠标点击不会出现焦点环 */
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+/* 视图切换与提示区的容器本身可被聚焦（用于状态切换后把焦点交过去） */
+.panel:focus, .notice:focus, .result:focus, #panel-export:focus { outline: none; }
+
+/* ── 顶栏 ───────────────────────────────────────────── */
+.brandbar {
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+}
+.brandbar .in {
+  max-width: 900px; margin: 0 auto; padding: 15px 24px;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+}
+.brand { display: flex; align-items: center; gap: 12px; font-size: 13px;
+  letter-spacing: .18em; color: var(--ink-2); }
+/* 左上角改用社团 logo 图（原来是「北京大学学生爱心社」文字）。
+   logo 是横向组合（心形 + 中文 + since 1993 + 英文），按高度对齐「爱心足迹」的字高，
+   宽度自适应；让它与后面的「爱心足迹」在同一基线上。 */
+.brand .clublogo { display: block; height: 34px; width: auto; }
+.brand b { font-family: var(--serif); font-size: 16px; letter-spacing: .3em;
+  color: var(--ink); font-weight: 600; }
+.brandbar .again { font-size: 12.5px; color: var(--ink-2); text-decoration: none;
+  border-bottom: 1px solid var(--rule-2); padding-bottom: 1px; }
+.brandbar .again:hover { color: var(--accent); border-color: var(--accent); }
+
+.app { max-width: 900px; margin: 0 auto; padding: 0 24px 80px; position: relative; z-index: 1; }
+/* ── 方案 C · 材质：整页纸底 ─────────────────────────────
+   纹理是一层次要叠加，不是页面底色 —— 直接当底色平铺会变成「皱牛皮纸」，
+   压住正文并露出接缝。fixed 层 + multiply，正文永远在它上面。 */
+body:before { content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image: url('assets/paper-grain.jpg?v=20261013a');
+  background-size: 512px 512px; opacity: .15; mix-blend-mode: multiply; }
+
+/* ── 入口 ───────────────────────────────────────────── */
+.entry { padding: 56px 0 0; max-width: 520px; }
+.entry h1 { font-family: var(--serif); font-size: 30px; font-weight: 600;
+  letter-spacing: .04em; margin: 0 0 8px; }
+.entry .sub { margin: 0 0 30px; color: var(--ink-2); font-size: 13.5px; }
+.form { display: grid; gap: 16px; }
+.field { display: grid; gap: 6px; }
+.field .k { font-size: 11.5px; letter-spacing: .24em; color: var(--ink-3); }
+.field input {
+  font: inherit; font-size: 16px; color: var(--ink); background: transparent;
+  border: 0; border-bottom: 1px solid var(--rule-2); padding: 8px 0;
+  border-radius: 0; outline: none;
+}
+.field input:focus { border-color: var(--accent); }
+.form button {
+  margin-top: 10px; border: 1px solid var(--ink); background: var(--ink); color: var(--paper);
+  padding: 11px 0; letter-spacing: .16em; font-size: 14px;
+  transition: background .18s, color .18s;
+}
+.form button:hover { background: var(--accent); border-color: var(--accent); }
+
+/* ── 加载 ───────────────────────────────────────────── */
+.loading { padding: 64px 0 0; max-width: 520px; }
+.loading .t { font-family: var(--serif); font-size: 19px; letter-spacing: .06em; margin: 0 0 14px; }
+.loading .rule { height: 1px; background: var(--rule); position: relative; overflow: hidden; }
+.loading .rule i { position: absolute; inset: 0 auto 0 0; width: 32%; background: var(--accent);
+  animation: sweep 1.15s cubic-bezier(.5, 0, .5, 1) infinite; }
+@keyframes sweep { from { transform: translateX(-110%); } to { transform: translateX(340%); } }
+.loading .n { margin: 14px 0 0; font-size: 12px; color: var(--ink-3); line-height: 1.9; }
+
+/* ── 提示（查不到 / 空记录） ────────────────────────── */
+.notice { padding: 56px 0 0; max-width: 560px; }
+.notice h2 { font-family: var(--serif); font-size: 23px; font-weight: 600;
+  letter-spacing: .04em; margin: 0 0 12px; }
+.notice p { margin: 0 0 14px; color: var(--ink-2); font-size: 14.5px; }
+.notice ul { margin: 0 0 22px; padding: 0; list-style: none; }
+.notice li { position: relative; padding-left: 16px; margin-bottom: 9px;
+  font-size: 13.5px; color: var(--ink-2); }
+.notice li:before { content: ""; position: absolute; left: 0; top: .68em;
+  width: 5px; height: 5px; background: var(--accent); }
+.notice button { border: 1px solid var(--ink); background: transparent; color: var(--ink);
+  padding: 9px 20px; letter-spacing: .14em; font-size: 13px; }
+.notice button:hover { background: var(--ink); color: var(--paper); }
+
+/* ── 结果：身份栏 ───────────────────────────────────── */
+.ident { padding: 34px 0 0; border-bottom: 1px solid var(--rule); }
+.ident .name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 16px; }
+.ident .name h1 { font-family: var(--serif); font-size: 27px; font-weight: 600;
+  letter-spacing: .06em; margin: 0; }
+.ident .name .ids { font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+.ident .stats { display: flex; flex-wrap: wrap; gap: 10px 34px; margin: 18px 0 20px; }
+.ident .stats > div { display: flex; align-items: baseline; gap: 7px; }
+.ident .stats .k { font-size: 11.5px; letter-spacing: .2em; color: var(--ink-3); }
+.ident .stats .v { font-family: var(--serif); font-size: 21px; font-weight: 600;
+  font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.ident .stats .u { font-size: 11.5px; color: var(--ink-3); }
+
+/* 视图切换 */
+.views { display: flex; align-items: flex-end; border-bottom: 1px solid var(--rule); margin-top: 26px; }
+.tablist { display: flex; margin-bottom: -1px; }
+.views button {
+  border: 0; background: transparent; padding: 11px 20px 10px;
+  border-bottom: 2px solid transparent; color: var(--ink-3);
+  font-size: 13.5px; letter-spacing: .2em;
+}
+.views button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.views button:hover { color: var(--ink); }
+
+/* 降级提示 */
+.degraded { margin: 20px 0 0; border-left: 3px solid var(--accent);
+  background: var(--accent-soft); padding: 12px 16px; font-size: 13px; color: var(--ink-2); }
+.degraded b { color: var(--ink); }
+
+/* ══ 视图一 · 足迹（强调成长） ═══════════════════════ */
+.trail { padding: 4px 0 0; }
+.walk { position: relative; padding-top: 22px; }
+/* 时间轴曲线：由 JS 按【与圆圈同一个函数】生成路径，所以圆圈永远贴在曲线上。
+   1px、墨色系、幅度克制 —— 是引导线，不是波浪装饰。 */
+.walk .tl { position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none;
+  overflow: visible; }
+.walk .tl-path { fill: none; stroke: #c4c0b5; stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+.origin, .stop, .today { display: grid; grid-template-columns: var(--gut) var(--node) 1fr;
+  align-items: start; }
+.origin, .today { padding: 22px 0 6px; }
+.node { grid-column: 2; position: relative; min-height: 20px; }
+.node:before { content: ""; position: absolute; left: 50%; margin-left: -2.5px; top: 9px;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--paper);
+  border: 1px solid var(--ink-3); }
+.node.big:before { width: 11px; height: 11px; margin-left: -5.5px; top: 6px;
+  background: var(--ink); border-color: var(--ink); }
+
+/* 活动圆点：本体是一颗 7px 小圆，但按钮要 34px —— 触摸目标不能只有 7px。
+   视觉小圆由 .ndot:before 画在正中，所以圆心 = 单元格中心 = 曲线上的点。 */
+.ndot { grid-column: 2; appearance: none; -webkit-appearance: none; background: none;
+  border: 0; padding: 0; width: 100%; height: 34px; margin-top: -3px; position: relative;
+  cursor: pointer; display: block; }
+.ndot:before { content: ""; position: absolute; left: 50%; top: 50%; width: 7px; height: 7px;
+  margin: -3.5px 0 0 -3.5px; border-radius: 50%; background: var(--paper);
+  border: 1px solid var(--ink-3); box-sizing: border-box; transition: transform .16s ease; }
+.ndot.solid:before { background: var(--accent); border-color: var(--accent); }
+/* 起点黑球：同一个按钮，只是圆点更大（11px）且是实心墨色。
+   margin-top 让圆心落在第一行 30px 文字的中线上。 */
+.ndot-big:before { width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
+  background: var(--ink); border-color: var(--ink); }
+.ndot-big { margin-top: 3px; }
+.ndot:hover:before, .ndot:focus-visible:before { transform: scale(1.35); }
+.ndot:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+.origin .body, .today .body { grid-column: 3; }
+/* 入社日期放大到与「从这里开始」同级：同一字族、同一字号、同一字重，
+   日期仍保留等宽数字以免两个数字串对不齐。 */
+.origin .when { font-family: var(--serif); font-size: 30px; font-weight: 600;
+  letter-spacing: .05em; color: var(--ink); font-variant-numeric: tabular-nums; }
+.origin h2 { font-family: var(--serif); font-size: 30px; font-weight: 600; letter-spacing: .05em;
+  margin: 0 0 4px; }
+/* 起点的可收起区：提问 + 寄语 */
+.origin .detail { padding-top: 2px; }
+.origin .sub { margin: 0; font-size: 13.5px; color: var(--ink-2); max-width: 42ch; }
+/* 起点现在先提问，再放社员在入社问卷里留下的那句话 */
+.origin .ask { margin: 10px 0 0; font-size: 14px; color: var(--ink-2); max-width: 42ch; }
+.origin .joinmsg { margin: 10px 0 0; padding: 2px 0 2px 15px; border-left: 2px solid var(--accent);
+  font-family: var(--kai); font-size: 17px; line-height: 1.9; color: var(--ink);
+  max-width: 40ch; }
+/* 起点插画：一条延伸的小径与脚印，作页边小品打断线条堆叠。
+   它是对角线构图，铺满整列会有近 400px 高、压住正文，所以右对齐、限宽。
+   显式声明宽高比：图片加载前就占住高度，否则它下方的所有圆点 y 都会被算小，
+   时间轴的波动偏移就全错位（实测偏差可达 14px）。 */
+.origin .path-art { display: block; width: 100%; max-width: 420px; height: auto;
+  aspect-ratio: 1044 / 568; margin: 22px 0 2px auto; opacity: .9; }
+.today .line { font-family: var(--serif); font-size: 21px; letter-spacing: .04em; margin: 7px 0 0; }
+.today .line b { font-variant-numeric: tabular-nums; }
+/* 分隔号与它后面的量绑在一起，窄屏换行时不会把「·」孤零零留在行尾 */
+.today .line .nw { white-space: nowrap; margin-right: .38em; }
+
+/* 学年分节：一道凸版压痕（深墨线 + 下方一道高光），而不是普通细线 */
+.yhead { display: flex; align-items: baseline; gap: 16px; margin: 38px 0 0;
+  padding-bottom: 8px; border-bottom: 2px solid var(--ink);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .85); }
+.yhead .yn { font-family: var(--serif); font-size: 17px; font-weight: 600; letter-spacing: .12em; }
+.yhead .ym { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+.term { display: grid; grid-template-columns: var(--gut) var(--node) 1fr; align-items: center;
+  margin: 20px 0 2px; }
+.term .t { grid-column: 1; text-align: right; padding-right: 14px;
+  font-family: var(--mono); font-size: 12px; letter-spacing: .12em; color: var(--ink-2); }
+/* 学期带：细线 + 右侧场次数 */
+.term .r { grid-column: 2 / -1; position: relative; display: flex; align-items: center;
+  min-height: 30px; }
+/* 学期细线的左端要落在曲线上：.r 单元格从 --gut 起，而曲线在 --gut + --node/2，
+   所以是 node/2 + 波动位移 —— 少了这个 node/2 就会恒定偏 17px。 */
+.term .r:before { content: ""; position: absolute;
+  left: calc(var(--node) / 2 + var(--wave, 0px)); right: 0; top: 50%;
+  height: 1px; background: var(--rule-2); }
+.term .cnt { margin-left: auto; position: relative; padding-left: 12px;
+  background: var(--paper); font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+
+/* 终点不再放「一排徽记」：评审指出它像坏掉的图标字体行，而且一个产品里出现
+   三套插画语言（起点小径、档案徽记、终点徽记排）本身就不成立。终点只留那句话。 */
+
+.stop { padding: 8px 0; }
+/* 日期栏现在同时承载：日期 + 一枚部组印记（方案 C）。
+   印记是 38px 压痕方框 + 部组徽记 —— 页面上「走过多少路」的可视累积。 */
+.stop .g { grid-column: 1; text-align: right; padding-right: 14px; padding-top: 1px;
+  font-family: var(--mono); font-size: 12px; color: var(--ink-3); letter-spacing: .03em; }
+.stop .g .gd { display: block; }
+.stop .seal { display: block; width: 38px; height: 38px; margin: 8px 0 0 auto; padding: 4px;
+  border: 1px solid var(--rule-2); border-radius: 2px; box-sizing: border-box;
+  box-shadow: inset 0 1px 1.5px rgba(90, 80, 60, .2), 0 1px 0 rgba(255, 255, 255, .8); }
+.stop .seal img { width: 100%; height: 100%; display: block; opacity: .82; }
+.stop .b { grid-column: 3; }
+.line1 { display: grid; grid-template-columns: minmax(0, 1fr) var(--cum) var(--cum-n);
+  align-items: center; gap: 0 14px; }
+.line1 .nm { font-size: 15px; letter-spacing: .01em; }
+/* 累计场次：随足迹向前增长的唯一量化装置。
+   必须【左端对齐、从左往右填】—— 右对齐反向填充会让「增长」在从左读到右的页面上读反，
+   也会和加载条（左→右）自相矛盾。尾端数字就是「第几场」。 */
+.line1 .track { height: 4px; background: var(--paper-2); position: relative; }
+.line1 .track i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent);
+  opacity: .62; }
+.line1 .cn { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); text-align: right;
+  font-variant-numeric: tabular-nums; }
+.line1 .cn b { color: var(--ink-2); font-weight: 600; }
+.stop .meta { margin-top: 3px; display: flex; align-items: baseline; gap: 8px;
+  font-size: 11.5px; color: var(--ink-3); letter-spacing: .06em; }
+.stop .meta .sep { color: var(--rule-2); }
+.stop .meta .hrs { font-family: var(--mono); letter-spacing: 0; }
+/* 感想默认收起，只有悬停/聚焦红色实心圆点时才展开，且是【中速匀速】——
+   用 grid-template-rows 0fr→1fr 才能真的匀速改变高度（max-height 不是匀速），
+   配 linear 缓动。收起态仍留在无障碍树里（不是 display:none），读屏能读到。 */
+.notewrap { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .38s linear; }
+.notewrap > .note { overflow: hidden; min-height: 0; }
+.stop.open .notewrap { grid-template-rows: 1fr; }
+.notewrap .note { margin: 0; padding-left: 0; border-left: 0; }
+.stop.open .notewrap .note { margin: 8px 0 2px; }
+.stop .note { padding-left: 14px; border-left: 2px solid var(--rule-2);
+  font-family: var(--kai); font-size: 14.5px; color: var(--ink-2); line-height: 1.85;
+  max-width: 56ch; }
+
+/* 原来的「累计场次」图例已删除：它悬在起点与第一个学年之间、离第一根条 150px，
+   画的是灰线而实时条是「灰轨 + 品牌红填充」，既没有分母也对不上样 —— 是个孤立的图例。
+   每行尾端的 n/21 加左起填充的条本身已自解释。 */
+
+/* ══ 视图二 · 档案（强调部组参与） ═══════════════════ */
+.dossier { padding: 26px 0 0; }
+/* 分类夹索引：一眼看到参与面有多宽。索引本身也做成档案标签的样子 ——
+   牛皮纸底、上缘标签角、部组名下方一枚徽记（与正文档案头同源）。 */
+
+.fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 46px;
+  margin: 0 0 8px; }
+.f { display: grid; grid-template-columns: 76px 1fr; align-items: baseline; gap: 0 10px;
+  padding: 6px 0; }
+.f .k { font-size: 12px; letter-spacing: .22em; color: var(--ink-3); white-space: nowrap; }
+.f .v { position: relative; text-align: right; font-size: 14px; }
+.f .v:before { content: ""; position: absolute; left: 0; right: 0; bottom: 3px;
+  border-bottom: 1px dotted var(--rule-2); }
+.f .v span { position: relative; background: var(--paper); padding: 0 1px 0 8px; }
+.f .v .cav { display: block; font-size: 10.5px; color: var(--ink-3); font-family: var(--sans);
+  margin-top: 2px; }
+
+/* ── 部组文件头：纵向堆叠的档案标签 ─────────────────────
+   相邻文件头略微重合，但重合带只落在【上一块的下内边距】里（内边距 14px ≥ 重合 12px），
+   所以不会遮住任何图像或文字。上一块展开时取注重合，避免压到活动内容。 */
+.gsec { position: relative; }
+.gsec + .gsec { margin-top: -12px; transition: margin-top .5s cubic-bezier(.4,0,.2,1); }
+.gsec.open + .gsec { margin-top: 10px; }
+
+.gplate { position: relative; display: grid; width: 100%; text-align: left;
+  grid-template-columns: 22px 52px minmax(0, 1fr) 20px; align-items: center; gap: 0 14px;
+  background: var(--kraft); border: 0; border-left: 3px solid var(--accent);
+  /* 顶边高光：堆叠时靠它读出「一张压着一张」。没有它，同色牛皮纸会糊成一整块。
+     同时去掉了左上角的标签角 —— 它与纵向堆叠冲突，会在左侧排成一串锯齿。 */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .6);
+  padding: 13px 18px 14px 12px; font: inherit; color: inherit; cursor: pointer; }
+.gplate:hover { background: var(--kraft-2); }
+.gplate:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* 装订孔：纸色圆点 + 内阴影，读作打孔而不是装饰圆点 */
+.gplate .holes { display: flex; flex-direction: column; gap: 15px; align-items: center;
+  align-self: stretch; justify-content: center; }
+.gplate .holes i { width: 7px; height: 7px; border-radius: 50%; background: var(--paper);
+  box-shadow: inset 0 1px 1.5px rgba(0, 0, 0, .28); }
+.gplate .gmark { width: 52px; height: 52px; display: block; }
+.gplate .gmain { display: block; min-width: 0; }
+.gplate .gname { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 12px;
+  font-family: var(--serif); font-size: 19px; font-weight: 600; letter-spacing: .1em; }
+/* 宗旨：紧邻部组名右侧，字号更小、颜色次要 */
+.gplate .gmotto { font-size: 12.5px; font-weight: 400; letter-spacing: .02em; color: var(--ink-2); }
+.gplate .gmeta { display: block; margin-top: 5px; font-family: var(--mono); font-size: 11px;
+  color: var(--ink-3); letter-spacing: .04em; }
+/* 展开箭头：状态可见，且不依赖颜色 */
+.gplate .gchev { justify-self: end; width: 9px; height: 9px; border-right: 1.5px solid var(--ink-2);
+  border-bottom: 1.5px solid var(--ink-2); transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform .3s cubic-bezier(.4,0,.2,1); }
+.gsec.open .gplate .gchev { transform: rotate(-135deg) translate(-1px, -1px); }
+
+/* 活动区：0fr → 1fr 做高度过渡（max-height 既不是匀速也无法自适应内容高度），
+   所以是「徐徐展开」而不是瞬切。 */
+.gbody { display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows .5s cubic-bezier(.4,0,.2,1); }
+.gbody > .gbodyin { overflow: hidden; min-height: 0; }
+.gsec.open .gbody { grid-template-rows: 1fr; }
+.gbody .gact:first-child { padding-top: 14px; }
+
+/* 底部的全部展开 / 归档 */
+.docfoot { margin-top: 26px; display: flex; justify-content: center; }
+.allbtn { appearance: none; -webkit-appearance: none; font: inherit;
+  font-family: var(--sans); font-size: 12.5px; letter-spacing: .14em;
+  color: var(--ink-2); background: none; border: 1px solid var(--rule-2);
+  padding: 10px 26px; cursor: pointer; transition: color .18s, border-color .18s; }
+.allbtn:hover { color: var(--ink); border-color: var(--ink-2); }
+.allbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.allbtn.on { color: var(--accent); border-color: var(--accent); }
+.gact { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 0 16px;
+  padding: 10px 0; border-bottom: 1px solid var(--rule); align-items: start; }
+.gact:last-child { border-bottom: 0; }
+/* 只有两列：学时不再占右侧的「数值列」（那是列表里最强的版面位，等于把学时当成绩），
+   而是作为标题同行的灰色小字，与足迹视图口径一致。 */
+.gact .d { grid-column: 1; grid-row: 1; font-family: var(--mono); font-size: 12px;
+  color: var(--ink-3); }
+.gact .bd { grid-column: 2; grid-row: 1; min-width: 0; }
+.gact .nm { font-size: 15px; }   /* 与足迹视图的活动名同号，两视图保持一致 */
+.gact .term { display: inline; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+  margin-left: 8px; }
+/* 学时：与标题同行的灰色小字，不占数值列 */
+.gact .hrs { display: inline; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+  margin-left: 8px; font-variant-numeric: tabular-nums; }
+.gact .note { margin: 6px 0 0; padding-left: 13px; border-left: 2px solid var(--rule-2);
+  font-family: var(--kai); font-size: 14px; color: var(--ink-2); line-height: 1.8; }
+
+/* ══ 视图三 · 导出卡片 ═══════════════════════════════ */
+.exportview { padding: 26px 0 0; }
+.card {
+  width: 100%; max-width: 540px; margin: 0 auto; background: var(--paper);
+  border: 1px solid var(--rule-2);
+}
+/* 报头：栏图整幅显示（不裁切、不加遮罩、上面不压任何元素）。
+   标题走正常流、排在栏图【下方】，所以不会遮挡栏图。
+   标题带底色取栏图底边的实测色 #800421 —— 与 --accent(#840923) 略有差异，
+   用栏图自己的色才不会在接缝处露出一条分界线。 */
+.card-head { background: #800421; overflow: hidden; }
+.card-head .art { display: block; width: 100%; height: auto; }
+.card-head .tit { padding: 14px 26px 20px; text-align: center; }
+.card-head h2 { font-family: var(--serif); font-size: 30px; font-weight: 700; letter-spacing: .06em;
+  color: #fff; margin: 0 0 8px; }
+.card-head .when { font-family: var(--mono); font-size: 11.5px; letter-spacing: .12em;
+  color: rgba(255, 255, 255, .78); }
+
+/* 三个统计框：改为细线分格，不是圆角卡片；学时排在最后、与另两项同权重 */
+.card-stats { display: grid; grid-template-columns: repeat(3, 1fr);
+  border-bottom: 1px solid var(--rule-2); }
+.card-stats .stat { padding: 16px 8px 15px; text-align: center; border-right: 1px solid var(--rule); }
+.card-stats .stat:last-child { border-right: 0; }
+.card-stats .k { display: block; font-size: 11px; letter-spacing: .2em; color: var(--ink-3);
+  margin-bottom: 5px; }
+.card-stats .v { font-family: var(--serif); font-size: 27px; font-weight: 600;
+  font-variant-numeric: tabular-nums; letter-spacing: .01em; }
+.card-stats .v i { font-style: normal; font-size: 11.5px; font-family: var(--sans);
+  color: var(--ink-3); margin-left: 5px; letter-spacing: .1em; }
+
+.card-list { padding: 20px 22px 8px; }
+.card-list h3 { font-family: var(--serif); font-size: 15px; font-weight: 600; letter-spacing: .16em;
+  margin: 0 0 12px; position: relative; padding-left: 13px; }
+.card-list h3:before { content: ""; position: absolute; left: 0; top: .25em; bottom: .2em;
+  width: 4px; background: var(--accent); }
+.crow { display: grid; grid-template-columns: 9px 66px minmax(0, 1fr) 62px 40px;
+  gap: 0 10px; align-items: baseline; padding: 5px 0; font-size: 12.5px; }
+.crow .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--rule-2);
+  align-self: center; }
+.crow.noted .dot { background: var(--accent); }
+.crow .d { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.crow .grp { font-size: 11px; color: var(--ink-3); letter-spacing: .04em; }
+.crow .h { text-align: right; font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+  font-variant-numeric: tabular-nums; }
+
+/* 页脚三栏：左＝社团三字图，中＝标语/社团/日期，右＝二维码。
+   三字图放在左下角（列 1、底部对齐），不压任何文字 —— 文字整体右移到列 2。 */
+.card-foot { margin-top: 14px; padding: 16px 22px 20px; border-top: 1px solid var(--rule-2);
+  display: grid; grid-template-columns: auto 1fr auto; gap: 6px 16px; align-items: end; }
+/* 左下角的「爱心社」三字图（用户提供）。竖向书法，按高度控制尺寸。 */
+.card-foot .sealimg { grid-column: 1; grid-row: 1 / span 3; align-self: end; width: 46px;
+  height: auto; display: block; }
+.card-foot .motto { grid-column: 2; font-size: 14px; font-weight: 700; color: var(--accent);
+  letter-spacing: .06em; }
+.card-foot .org { grid-column: 2; font-size: 12px; color: var(--ink-2); }
+.card-foot .asof { grid-column: 2; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+/* 右下角：从栏图里抠出来的关注二维码。
+   尺寸取 92px 而不是原来的 74px 占位框 —— 这个码的模块较密，
+   太小会扫不出来；右下角留白足够，放大不影响排版。 */
+.card-foot .qr { grid-column: 3; grid-row: 1 / span 3; width: 92px; height: 92px; }
+.card-foot .qr img { display: block; width: 100%; height: 100%; }
+
+.card-actions { max-width: 540px; margin: 18px auto 0; display: flex; align-items: center;
+  gap: 20px; flex-wrap: wrap; }
+/* 两个动作完全同一套样式：「打印 / 存为 PDF」与「下载 CSV」外观必须一致。
+   注意 <a> 默认是 inline：给它加 padding/border 不会影响行高，盒子高度会和
+   <button> 不一样，所以必须显式 display:inline-block 才能几何一致。 */
+.card-actions button, .card-actions .csv {
+  display: inline-block; font-family: inherit; font-size: 13px; font-weight: 400;
+  letter-spacing: .12em; line-height: 1.25; text-decoration: none; cursor: pointer;
+  border: 1px solid var(--ink); background: transparent; color: var(--ink);
+  padding: 9px 18px;
+}
+.card-actions button:hover, .card-actions .csv:hover {
+  background: var(--ink); color: var(--paper);
+}
+.card-actions .hint { font-size: 11.5px; color: var(--ink-3); flex: 1 1 220px; }
+
+/* ── 一次性动效：只服务层级，不循环、不粘滚动 ──────── */
+@keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.anim-rise { animation: rise .42s cubic-bezier(.22, .61, .36, 1) both; }
+.anim-fade { animation: fade .4s ease-out both; }
+/* 中轴线自上而下画出，像足迹一路延伸 */
+@keyframes drawY { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+/* 累计条随滚动进入视口再生长，一次即止 */
+.track i.anim { animation: grow .5s cubic-bezier(.3, .7, .3, 1) both; }
+/* 活动记录：滚动进入视口时自右向左、流体滑入（一次即止）。
+   默认态必须可见 —— 只有拿到 reveal-ready 才隐藏，否则 JS 未跑或减少动效时会白屏。 */
+.walk.reveal-ready .stop { opacity: 0; transform: translateX(40px); }
+.walk.reveal-ready .stop.in {
+  opacity: 1; transform: none;
+  transition: opacity .5s ease-out, transform .74s cubic-bezier(.16, .84, .28, 1);
+}
+body.still *, body.still *:before, body.still *:after { animation: none !important; transform: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *:before, *:after { animation: none !important; }
+  /* 过渡也要关：感想展开、圆点缩放、ttab 变色都走 transition，只关 animation 不够。
+     曲线涟漪另在 JS 里由 REDUCED 拦掉（它是 rAF 驱动的，CSS 管不到）。 */
+  *, *:before, *:after { transition: none !important; }
+}
+
+/* ── 窄屏 ───────────────────────────────────────────── */
+@media (max-width: 720px) {
+  :root { --gut: 62px; --node: 30px; --cum: 74px; --cum-n: 26px; }
+  .app { padding: 0 18px 64px; }
+  .brandbar .in { padding: 13px 18px; }
+  .brand b { margin-left: 8px; letter-spacing: .2em; }
+  .entry { padding-top: 40px; }
+  .entry h1 { font-size: 25px; }
+  .ident .name h1 { font-size: 23px; }
+  .ident .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px;
+    margin: 16px 0 18px; }
+  .ident .stats .v { font-size: 18px; }
+  .views button { padding: 10px 12px 9px; font-size: 12.5px; letter-spacing: .12em; }
+    /* 窄屏把起点收紧：原来起点（含插画）几乎占满第一屏，第一条记录掉到折线以下 */
+  .origin { padding: 10px 0 2px; }
+  .origin .path-art { max-width: 280px; margin: 12px 0 0 auto; }
+  .origin h2 { font-size: 24px; margin: 4px 0 3px; }
+    .node:before { left: 9.5px; }
+  .node.big:before { left: 6.5px; }
+  .today .line { font-size: 17px; }
+  .stop .g { font-size: 11px; padding-right: 10px; }
+  .line1 .nm { font-size: 14px; }
+  .stop .note { font-size: 14px; }
+  .fields { grid-template-columns: 1fr; gap: 0; }
+      .gact { grid-template-columns: 1fr; gap: 2px 0; }
+  .gact .d { grid-column: 1; grid-row: 1; }
+  .gact .bd { grid-column: 1; grid-row: 2; }
+  .card-head h2 { font-size: 23px; }
+  .card-stats .v { font-size: 22px; }
+  /* 保留「部组」列：卡片是要分享出去的，压紧列宽比丢字段好 */
+  .crow { grid-template-columns: 7px 54px minmax(0, 1fr) 46px 34px; gap: 0 7px; font-size: 11.5px; }
+  .crow .grp { font-size: 10px; letter-spacing: 0; }
+  .crow .d { font-size: 10px; }
+  .crow .h { font-size: 10px; }
+  .card-foot .qr { width: 62px; height: 62px; }
+}
+
+/* ── 打印：任何视图下都只出卡片 ─────────────────────── */
+@media print {
+  @page { size: A4 portrait; margin: 8mm; }
+  body { background: #fff; }
+  .brandbar, .entry, .loading, .notice, .ident, .views, .degraded,
+  .card-actions, .foot { display: none !important; }
+  .app { max-width: none; padding: 0; }
+  /* 关键：卡片面板在别的视图下带着 hidden，必须强制显示，否则打印出白纸 */
+  .panel { display: none !important; }
+  #panel-export { display: block !important; }
+  /* 卡片靠缩放 + 收紧行距落在一页内。
+     栏图换成 1362×632 之后卡片变高了（旧插画是 1600×460 的窄条），
+     所以 zoom 从 .86 下调到 .72 —— 实测这样仍是 1 页。 */
+  .card { border: 0; max-width: 452px; margin: 0 auto; zoom: .72; }
+  .card-head h2 { text-shadow: none; }
+  .card-stats .stat { padding: 12px 8px 11px; }
+  .crow { padding: 3.5px 0; }
+  .card-foot { padding: 12px 22px 14px; }
+}

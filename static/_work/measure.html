@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>量卡片尺寸</title></head>
+<body>
+<pre id="out">measuring…</pre>
+<iframe id="f" style="border:0;position:absolute;left:-9999px;width:508px;height:4000px"
+  src="/web/index.html?still=1&delay=0&view=export&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108"></iframe>
+<script>
+/* 打印时卡片 max-width 设成多少才能落在一页 A4 内？先量出卡片在固定宽度下的真实高度。 */
+document.getElementById('f').onload = function () {
+  var f = this, w = f.contentWindow, d = f.contentDocument;
+  setTimeout(function () {
+    var card = d.querySelector('.card');
+    var head = d.querySelector('.card-head');
+    var list = d.querySelector('.card-list');
+    var rows = d.querySelectorAll('.crow').length;
+    var mm = function (px) { return (px / 96 * 25.4).toFixed(1); };
+    document.getElementById('out').textContent =
+      'cardWidth=' + card.offsetWidth + ' cardHeight=' + card.offsetHeight +
+      ' (' + mm(card.offsetHeight) + 'mm)' +
+      ' headH=' + head.offsetHeight + ' listH=' + list.offsetHeight + ' rows=' + rows +
+      ' | A4 printable height @12mm margin = 273.0mm';
+  }, 900);
+};
+</script>
+</body></html>

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>爱心足迹 · 北京大学学生爱心社</title>
+<link rel="stylesheet" href="style.css?v=20261013a">
+</head>
+<body>
+
+<div class="brandbar">
+  <div class="in">
+    <div class="brand"><img class="clublogo" src="assets/club-logo.png?v=20261013a" alt="北京大学学生爱心社"><b>爱心足迹</b></div>
+    <a href="#" class="again" id="again" hidden>重新查询</a>
+  </div>
+</div>
+
+<div class="app">
+
+  <!-- ── 入口 ─────────────────────────────────────── -->
+  <section class="entry" id="entry">
+    <h1>查看你的爱心足迹</h1>
+    <p class="sub">输入入社时填写的姓名和学号。</p>
+    <form class="form" id="form" novalidate>
+      <label class="field"><span class="k">姓名</span>
+        <input name="name" autocomplete="name" enterkeyhint="next" placeholder="入社时填写的姓名"></label>
+      <label class="field"><span class="k">学号</span>
+        <input name="sid" inputmode="numeric" autocomplete="off" enterkeyhint="done" placeholder="10 位学号"></label>
+      <button type="submit">查看我的足迹</button>
+    </form>
+  </section>
+
+  <!-- ── 加载 ─────────────────────────────────────── -->
+  <section class="loading" id="loading" role="status" aria-live="polite" hidden>
+    <p class="t">正在翻阅你的档案…</p>
+    <div class="rule"><i></i></div>
+  </section>
+
+  <!-- ── 查不到 / 空记录 ─────────────────────────── -->
+  <section class="notice" id="notice" role="status" aria-live="polite" tabindex="-1" hidden>
+    <h2 id="noticeTitle"></h2>
+    <p id="noticeBody"></p>
+    <ul id="noticeList"></ul>
+    <button id="noticeBack" type="button">重新查询</button>
+  </section>
+
+  <!-- ── 结果 ─────────────────────────────────────── -->
+  <section class="result" id="result" tabindex="-1" hidden>
+    <div class="ident">
+      <div class="name">
+        <h1 id="rName">—</h1>
+        <div class="ids" id="rIds"></div>
+      </div>
+      <div class="stats" id="rStats"></div>
+    </div>
+
+    <div class="views">
+      <div class="tablist" role="tablist" aria-label="视图切换">
+        <button type="button" role="tab" data-view="trail" id="tab-trail"
+                aria-controls="panel-trail" aria-selected="true">足迹</button>
+        <button type="button" role="tab" data-view="dossier" id="tab-dossier"
+                aria-controls="panel-dossier" aria-selected="false">档案</button>
+        <button type="button" role="tab" data-view="export" id="tab-export"
+                aria-controls="panel-export" aria-selected="false">导出</button>
+      </div>
+      <span class="sp"></span>
+    </div>
+
+    <div class="degraded" id="degraded" role="status" hidden></div>
+
+    <div class="panel" id="panel-trail" role="tabpanel" aria-labelledby="tab-trail" tabindex="-1"></div>
+    <div class="panel" id="panel-dossier" role="tabpanel" aria-labelledby="tab-dossier" tabindex="-1" hidden></div>
+    <div class="panel" id="panel-export" role="tabpanel" aria-labelledby="tab-export" tabindex="-1" hidden></div>
+  </section>
+</div>
+
+<!-- 脚本顺序有意义：derive（纯派生）→ bridge（数据通道）→ app（渲染）。
+     ⚠️ 这里【刻意不引入】data/mock-db.js：生产形态下由 Streamlit 组件回传真数据，
+     假数据库只在独立形态（本地设计、_work/selftest.html）由 bridge.js 动态加载。 -->
+<script src="data/derive.js?v=20261013a"></script>
+<script src="data/bridge.js?v=20261013a"></script>
+<script src="app.js?v=20261013a"></script>
+</body>
+</html>

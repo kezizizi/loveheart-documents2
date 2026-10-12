@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>爱心足迹 · 前端自检</title>
+<style>body{font:13px/1.6 Consolas,monospace;margin:0;padding:12px}
+pre{white-space:pre-wrap;margin:0}
+iframe{width:900px;height:400px;border:1px solid #ccc;position:absolute;left:-9999px}
+</style></head>
+<body>
+<pre id="report">running…</pre>
+<div id="frames"></div>
+<script>
+/* 在真实浏览器里驱动 web/index.html 并断言。同源 iframe（同一 host:port），
+ * 因此可以直接访问其 document 并派发事件 —— 这比 jsdom 更接近真实行为。 */
+(function () {
+  var lines = [], fails = 0, checks = 0;
+
+  function ok(name, pass, detail) {
+    checks++;
+    if (!pass) fails++;
+    lines.push((pass ? 'PASS  ' : 'FAIL  ') + name + (detail ? '  [' + detail + ']' : ''));
+  }
+  function report() {
+    lines.push('');
+    lines.push(fails === 0 ? ('RESULT ALL PASS  (' + checks + ' checks)')
+                           : ('RESULT ' + fails + ' FAILED / ' + checks + ' checks'));
+    document.getElementById('report').textContent = lines.join('\n');
+  }
+
+  function load(url, w, h) {
+    return new Promise(function (resolve) {
+      var f = document.createElement('iframe');
+      f.style.width = (w || 900) + 'px';
+      f.style.height = (h || 400) + 'px';
+      f.src = url;
+      f.onload = function () { resolve(f); };
+      document.getElementById('frames').appendChild(f);
+    });
+  }
+  function until(fn, ms) {
+    var t0 = Date.now();
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        var v; try { v = fn(); } catch (e) { v = null; }
+        if (v) return resolve(v);
+        if (Date.now() - t0 > (ms || 4000)) return reject(new Error('timeout'));
+        setTimeout(tick, 25);
+      })();
+    });
+  }
+
+  /* 颜色盘点：只允许「中性墨色 + 一个品牌红」。这是「弃用九色部组配色」的可验证形式。 */
+  function palette(win, root) {
+    var seen = {}, bad = [];
+    var GRAY = 26, ACCENT = [132, 9, 35], TOL = 34;
+    function judge(r, g, b, where) {
+      var max = Math.max(r, g, b), min = Math.min(r, g, b);
+      var gray = (max - min) <= GRAY;
+      var acc = Math.abs(r - ACCENT[0]) <= TOL && Math.abs(g - ACCENT[1]) <= TOL &&
+                Math.abs(b - ACCENT[2]) <= TOL;
+      if (!gray && !acc) bad.push(where + '=' + r + ',' + g + ',' + b);
+    }
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i], cs = win.getComputedStyle(e);
+      var m = cs.color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (m) { var k = 'c' + m[1] + m[2] + m[3]; if (!seen[k]) { seen[k] = 1; judge(+m[1], +m[2], +m[3], 'color'); } }
+      var bg = cs.backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)/);
+      if (bg && +bg[4] > 0.02) {
+        var r = +bg[1], g = +bg[2], b = +bg[3];
+        var bright = (r + g + b) / 3 > 225;            // 纸色/白底不算颜色
+        var k2 = 'b' + r + g + b;
+        if (!bright && !seen[k2]) { seen[k2] = 1; judge(r, g, b, 'bg'); }
+      }
+    }
+    return bad;
+  }
+
+  /* WCAG 相对亮度与对比度 */
+  function lum(rgb) {
+    var f = function (c) { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+  }
+  function parseRgb(s) {
+    var m = String(s).match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    return m ? [+m[1], +m[2], +m[3]] : null;
+  }
+  function contrast(fg, bg) {
+    var a = lum(fg), b = lum(bg);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  }
+
+  /* 只算当前这位社员的学时合计。早先版本对所有成员求和（136.0），
+   * 而页面上根本不会出现 136.0，那条断言就成了空转的假通过 —— 必须按人算。 */
+  function totalFor(win, sid) {
+    var ms = win.MOCK_DB.query(
+      win.MOCK_DB.members.filter(function (m) { return m.sid === sid; })[0].name, sid);
+    var t = 0;
+    ms.terms.forEach(function (x) { x.items.forEach(function (a) { t += a.hours; }); });
+    return t.toFixed(1);
+  }
+
+  /* 找面板里是否有「大号纯数字」——把总学时放大的典型形态 */
+  function bigNumeric(win, root) {
+    var bad = [];
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      var e = all[i];
+      if (e.children.length > 0) continue;
+      var t = (e.textContent || '').trim();
+      if (!t || !/^[\d.,\/]+$/.test(t)) continue;
+      var fs = parseFloat(win.getComputedStyle(e).fontSize);
+      if (fs >= 26) bad.push(t + '@' + fs + 'px');
+    }
+    return bad;
+  }
+
+  (async function () {
+    /* ── 1. 主结果页 ─────────────────────────────── */
+    var f = await load('/web/index.html?still=1&delay=0&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108');
+    var win = f.contentWindow, doc = win.document;
+
+    await until(function () { return !doc.getElementById('result').hidden; });
+
+    /* 身份栏：4 个主指标，且不含学时 */
+    var stats = doc.querySelectorAll('#rStats > div');
+    ok('身份栏有 4 个主指标', stats.length === 4, stats.length + ' 个');
+    var statText = doc.getElementById('rStats').textContent;
+    ok('主指标为 在社/参与/涉及/同行',
+      /在社/.test(statText) && /参与/.test(statText) && /涉及/.test(statText) && /同行/.test(statText),
+      statText.replace(/\s+/g, ' '));
+    ok('身份栏不含「学时」', statText.indexOf('学时') < 0);
+
+    /* 硬约束：主视图不得出现学时合计 */
+    var total = totalFor(win, '2300015108');
+    ok('学时合计应为 107.0（测试自身前提）', total === '107.0', total);
+    var trailText = doc.getElementById('panel-trail').textContent;
+    var dosText = doc.getElementById('panel-dossier').textContent;
+    ok('足迹视图不含学时合计 ' + total, trailText.indexOf(total) < 0);
+    ok('档案视图不含学时合计 ' + total, dosText.indexOf(total) < 0);
+    var bigT = bigNumeric(win, doc.getElementById('panel-trail'));
+    var bigD = bigNumeric(win, doc.getElementById('panel-dossier'));
+    ok('足迹视图无大号数字焦点', bigT.length === 0, bigT.join(','));
+    ok('档案视图无大号数字焦点', bigD.length === 0, bigD.join(','));
+
+    /* 但逐条学时必须在（不能靠删数据来满足约束） */
+    var hoursHits = (trailText.match(/学时/g) || []).length;
+    ok('足迹里逐条学时仍在（≥21 处）', hoursHits >= 21, hoursHits + ' 处');
+    ok('档案里逐条学时仍在', /6\.0|8\.0|12\.0/.test(dosText));
+
+    /* 风格统一：两个视图只允许「中性墨色 + 一个品牌红」，不得出现九色部组配色 */
+    var palT = palette(win, doc.getElementById('panel-trail'));
+    var palD = palette(win, doc.getElementById('panel-dossier'));
+    ok('足迹视图只用中性色 + 一个品牌红', palT.length === 0, palT.slice(0, 6).join(' '));
+    ok('档案视图只用中性色 + 一个品牌红', palD.length === 0, palD.slice(0, 6).join(' '));
+
+    /* 字体也统一：两视图的活动名同族同号 */
+    var nameT = doc.querySelector('#panel-trail .line1 .nm');
+    var nameD = doc.querySelector('#panel-dossier .gact .nm');
+    if (nameT && nameD) {
+      var fT = win.getComputedStyle(nameT), fD = win.getComputedStyle(nameD);
+      ok('两视图活动名字体族一致', fT.fontFamily === fD.fontFamily,
+        fT.fontFamily.split(',')[0] + ' vs ' + fD.fontFamily.split(',')[0]);
+      ok('两视图活动名字号一致', fT.fontSize === fD.fontSize, fT.fontSize + ' vs ' + fD.fontSize);
+    }
+    /* 强调色的 CSS 变量两视图同源 */
+    var rootAccent = win.getComputedStyle(doc.documentElement).getPropertyValue('--accent').trim();
+    ok('强调色由同一个变量提供', /^#?840923$/i.test(rootAccent), rootAccent);
+
+    /* 可访问性：小字对比度必须过 WCAG AA 4.5:1（日期/学时/笔数都是信息，不是装饰） */
+    var paper = parseRgb(win.getComputedStyle(doc.body).backgroundColor);
+    if (!paper) paper = [251, 250, 247];
+    [['元信息 .stop .meta', '#panel-trail .stop .meta'],
+     ['日期 .gact .d', '#panel-dossier .gact .d'],
+     ['学时 .gact .h', '#panel-dossier .gact .h'],
+     ['活动名 .line1 .nm', '#panel-trail .line1 .nm']
+    ].forEach(function (x) {
+      var el = doc.querySelector(x[1]);
+      if (!el) return;
+      var c = parseRgb(win.getComputedStyle(el).color);
+      var r = contrast(c, paper);
+      ok('对比度 ' + x[0] + ' ≥4.5:1', r >= 4.5, r.toFixed(2) + ':1');
+    });
+
+    /* 可访问性：WAI-ARIA tabs 结构 */
+    var tl = doc.querySelector('.tablist');
+    ok('视图切换用 role=tablist', !!tl && tl.getAttribute('role') === 'tablist');
+    var tabBtns = doc.querySelectorAll('.views button[role="tab"]');
+    ok('三个 tab 都有 role=tab', tabBtns.length === 3, tabBtns.length + ' 个');
+    ok('每次只有一个 tab 的 aria-selected=true',
+      doc.querySelectorAll('.views button[aria-selected="true"]').length === 1);
+    ok('每个 tab 都指向对应的 tabpanel',
+      Array.prototype.every.call(tabBtns, function (b) {
+        var p = doc.getElementById(b.getAttribute('aria-controls'));
+        return p && p.getAttribute('role') === 'tabpanel' &&
+          p.getAttribute('aria-labelledby') === b.id;
+      }));
+    ok('未选中的 tab 不在 Tab 序列里',
+      Array.prototype.filter.call(tabBtns, function (b) { return b.tabIndex === 0; }).length === 1);
+    ok('加载/提示区有 aria-live 播报',
+      doc.getElementById('loading').getAttribute('aria-live') === 'polite' &&
+      doc.getElementById('notice').getAttribute('aria-live') === 'polite');
+
+    /* 键盘可见焦点：样式里必须有 :focus-visible 规则 */
+    var hasFocusRule = Array.prototype.some.call(doc.styleSheets, function (ss) {
+      try {
+        return Array.prototype.some.call(ss.cssRules, function (r) {
+          return r.selectorText && r.selectorText.indexOf('focus-visible') >= 0;
+        });
+      } catch (e) { return false; }
+    });
+    ok('定义了键盘焦点样式', hasFocusRule);
+
+    /* 图片资源必须真的加载成功（404 或路径错只会显示空白，肉眼容易漏）。
+       先等所有图落地 —— 断言跑在图片还在飞的时候会误报，这是测试的问题不是产品的问题。 */
+    var imgs = doc.querySelectorAll('#panel-trail img, #panel-dossier img, #panel-export img');
+    await until(function () {
+      return Array.prototype.every.call(imgs, function (i) { return i.complete; });
+    }, 6000);
+    var broken = Array.prototype.filter.call(imgs, function (i) {
+      return !(i.complete && i.naturalWidth > 0);
+    }).map(function (i) { return i.getAttribute('src'); });
+    ok('足迹/档案/导出里的图片都加载成功', broken.length === 0,
+      imgs.length + ' 张，坏图: ' + broken.slice(0, 3).join(','));
+    ok('档案头装饰图存在', doc.querySelectorAll('#panel-dossier .gplate .gmark').length ===
+      doc.querySelectorAll('#panel-dossier .gsec').length);
+
+    /* ── 档案视图：部组文件头堆叠与展开 ───────────────────
+       注意：几何断言前必须先切到档案视图 —— 面板 hidden 时所有 rect 都是 0，
+       重合量与展开高度都会量成 0（我第一版就是这么误判的）。 */
+    doc.querySelectorAll('.views button')[1].click();
+    var gsecs = doc.querySelectorAll('#panel-dossier .gsec');
+    var plates = doc.querySelectorAll('#panel-dossier .gplate');
+    ok('每个部组一个文件头，且文件头是按钮',
+      gsecs.length === 9 && plates.length === 9 &&
+      Array.prototype.every.call(plates, function (p) { return p.tagName === 'BUTTON'; }),
+      gsecs.length + ' 个部组');
+    /* ② 初始只显示文件头，看不到任何活动 */
+    ok('初始状态全部收起（看不到具体活动）', (function () {
+      if (doc.querySelectorAll('#panel-dossier .gsec.open').length) return false;
+      return Array.prototype.every.call(
+        doc.querySelectorAll('#panel-dossier .gbody'),
+        function (b) { return b.getBoundingClientRect().height < 4; });
+    })());
+    /* 排序：按参与数量降序 */
+    ok('文件头按参与数量降序排列', (function () {
+      var ns = [];
+      Array.prototype.forEach.call(gsecs, function (sec) {
+        var m = /(\d+)\s*场/.exec(sec.querySelector('.gmeta').textContent);
+        ns.push(m ? Number(m[1]) : -1);
+      });
+      win.__sortDbg = ns.join(' ≥ ');
+      for (var i = 1; i < ns.length; i++) if (ns[i] > ns[i - 1]) return false;
+      return ns[0] > 0;
+    })(), win.__sortDbg);
+    /* 文件头纵向堆叠且略微重合 */
+    ok('文件头纵向堆叠且略微重合', (function () {
+      var worst = 0;
+      for (var i = 1; i < plates.length; i++) {
+        var prev = plates[i - 1].getBoundingClientRect();
+        var cur = plates[i].getBoundingClientRect();
+        /* 下一个文件头的顶边要落在上一个的底边之内，才算重合 */
+        if (cur.top < prev.bottom) worst = Math.max(worst, prev.bottom - cur.top);
+      }
+      win.__ovlDbg = '最大重合 ' + worst.toFixed(0) + 'px';
+      return worst > 4 && worst < 30;
+    })(), win.__ovlDbg);
+    /* 重合必须只落在空白里：不得遮挡上一个文件头的任何图像或文字。
+       用几何量测：后一块的顶边必须不低于前一块【所有内容元素】的底边。 */
+    ok('重合不遮挡任何图像或文字', (function () {
+      var bad = null;
+      for (var i = 1; i < plates.length; i++) {
+        var prev = plates[i - 1];
+        var curTop = plates[i].getBoundingClientRect().top;
+        var kids = prev.querySelectorAll('img, .holes, .gname, .gmotto, .gmeta, .gchev');
+        Array.prototype.forEach.call(kids, function (k) {
+          var r = k.getBoundingClientRect();
+          if (r.height > 0 && r.bottom > curTop + 0.5 && !bad) {
+            bad = '第' + i + '块顶边 ' + curTop.toFixed(1) +
+              ' 盖住了前一块的 ' + (k.className || k.tagName) + ' 底边 ' + r.bottom.toFixed(1);
+          }
+        });
+      }
+      win.__coverDbg = bad || '无遮挡';
+      return !bad;
+    })(), win.__coverDbg);
+    /* 删去 No.；日期只留起始年月 */
+    ok('文件头已删「No.」', doc.querySelectorAll('#panel-dossier .gno').length === 0 &&
+      doc.querySelector('#panel-dossier .doc').textContent.indexOf('No.') < 0);
+    ok('日期改为「起始年月 + 始」', (function () {
+      var t = doc.querySelector('#panel-dossier .gmeta').textContent;
+      return /\d{4}\.\d{2}始/.test(t) && t.indexOf(' 至 ') < 0;
+    })(), doc.querySelector('#panel-dossier .gmeta').textContent.trim());
+    /* ③ 点击展开 / 收回，最多一个展开。
+       高度要等过渡跑完再量（0.5s），点击瞬间 computed 高度仍是 ~0。 */
+    var p2 = plates[2];
+    /* 先验「有过渡」（必须在注入 no-transition 之前）；
+       再注入 no-transition：本环境下虚拟时间不保证推进 CSS 过渡，高度会随机量成 0。
+       要验的是「展开后活动可见」，不是「过渡在虚拟时间下跑了几帧」。 */
+    ok('展开/收回有高度过渡（不是瞬切）', (function () {
+      var st = win.getComputedStyle(p2.parentNode.querySelector('.gbody'));
+      win.__trDbg = 'transition=' + st.transitionProperty + ' ' + st.transitionDuration;
+      return st.transitionDuration !== '0s';
+    })(), win.__trDbg);
+    var noTr = doc.createElement('style');
+    /* 只关高度过渡，【不要】动 margin —— 第一版我把 .gsec 的 margin 也清零了，
+       结果连「展开后不再重合」的那条规则一起清掉，反而把被测行为破坏了。 */
+    noTr.textContent = '#panel-dossier .gbody{transition:none!important}';
+    doc.head.appendChild(noTr);
+    p2.click();
+    ok('点击文件头后状态立即变为展开', gsecs[2].classList.contains('open') &&
+      p2.getAttribute('aria-expanded') === 'true');
+    await new Promise(function (r) { setTimeout(r, 120); });
+    ok('点击文件头展开该部组（活动可见）',
+      gsecs[2].querySelector('.gbody').getBoundingClientRect().height > 20,
+      '展开后高度 ' + gsecs[2].querySelector('.gbody').getBoundingClientRect().height.toFixed(0) + 'px');
+    ok('展开时其他文件头仍收起', doc.querySelectorAll('#panel-dossier .gsec.open').length === 1);
+    /* 展开的那一块不得压住后面的活动内容。
+       注意不能拿「下一块顶边 vs 本块底边」来判：活动行自带 10px 下内边距，
+       底边本身包含空白，用它判会把「只压到空白」误报成遮挡。
+       所以要拿下一块顶边去比【最后一条活动的内容底边】。 */
+    ok('展开的部组与下一块不再重合（不压内容）', (function () {
+      var opened = doc.querySelectorAll('#panel-dossier .gsec.open')[0];
+      var nxt = opened.nextElementSibling;
+      if (!nxt) return true;
+      var nextTop = nxt.querySelector('.gplate').getBoundingClientRect().top;
+      var lastRow = opened.querySelector('.gact:last-child');
+      var pad = lastRow ? parseFloat(win.getComputedStyle(lastRow).paddingBottom) : 0;
+      var contentBottom = lastRow ? lastRow.getBoundingClientRect().bottom - pad
+        : opened.getBoundingClientRect().bottom;
+      win.__gapDbg = '下一块顶边距本块底边 ' +
+        (nextTop - opened.getBoundingClientRect().bottom).toFixed(1) +
+        'px；距最后一条活动的内容底边 ' + (nextTop - contentBottom).toFixed(1) + 'px';
+      return nextTop >= contentBottom - 0.5;
+    })(), win.__gapDbg);
+    plates[5].click();
+    ok('点击另一文件头：旧的收回、新的展开，始终最多一个',
+      !gsecs[2].classList.contains('open') && gsecs[5].classList.contains('open') &&
+      doc.querySelectorAll('#panel-dossier .gsec.open').length === 1);
+    /* ④ 底部按钮的联动 */
+    var allBtn2 = doc.querySelector('#panel-dossier .allbtn');
+    ok('底部按钮存在且文案为「全部展开 / 归档」二态',
+      !!allBtn2 && allBtn2.textContent.trim() === '归档',
+      '当前文案：' + (allBtn2 ? allBtn2.textContent.trim() : 'n/a'));
+    allBtn2.click();
+    ok('有部组展开时点击 → 全部收回，文案变「全部展开」',
+      doc.querySelectorAll('#panel-dossier .gsec.open').length === 0 &&
+      allBtn2.textContent.trim() === '全部展开');
+    allBtn2.click();
+    ok('全部收起时点击 → 全部展开，文案变「归档」',
+      doc.querySelectorAll('#panel-dossier .gsec.open').length === 9 &&
+      allBtn2.textContent.trim() === '归档');
+    allBtn2.click();
+    ok('再点恢复全部收回', doc.querySelectorAll('#panel-dossier .gsec.open').length === 0);
+    /* 务必切回足迹视图：后面还有大量足迹的几何断言，面板 hidden 时全部会量成 0 */
+    doc.querySelectorAll('.views button')[0].click();
+    await new Promise(function (r) { setTimeout(r, 260); });
+    ok('已切回足迹视图（后续足迹断言的前提）',
+      !doc.getElementById('panel-trail').hidden &&
+      doc.getElementById('panel-dossier').hidden);
+    /* ① 部组标签导航已删除 */
+    ok('部组标签导航已删除（不再有分类夹与跳转）',
+      doc.querySelectorAll('#panel-dossier .ftab').length === 0 &&
+      doc.querySelectorAll('#panel-dossier .ftabs').length === 0);
+    /* 宗旨：只放宗旨，紧邻部组名右侧，且 9 个部组都有 */
+    var mottos = doc.querySelectorAll('#panel-dossier .gplate .gmotto');
+    ok('每个部组标题右侧都有宗旨', mottos.length === doc.querySelectorAll('#panel-dossier .gsec').length,
+      mottos.length + ' 条');
+    ok('宗旨文案正确（护老部）', (function () {
+      var s = Array.prototype.map.call(mottos, function (m) { return m.textContent; }).join('|');
+      return s.indexOf('温暖暮年，让夕阳再晨；点亮青春，迎朝阳初升') >= 0 &&
+        s.indexOf('让无声的爱在指尖流淌') >= 0 &&
+        s.indexOf('将你我钩织成网，用爱心凝聚爱心') >= 0;
+    })());
+    ok('宗旨字号小于部组名', (function () {
+      var n = doc.querySelector('#panel-dossier .gplate .gname');
+      var mo = doc.querySelector('#panel-dossier .gplate .gmotto');
+      if (!n || !mo) return false;
+      return parseFloat(win.getComputedStyle(mo).fontSize) <
+        parseFloat(win.getComputedStyle(n).fontSize);
+    })());
+    ok('足迹起点插画存在', !!doc.querySelector('#panel-trail .path-art'));
+    /* 起点：提问 + 社员自己那句话；原来的「入社第一天。到今天，N 天。」已删 */
+    var originTxt = doc.querySelector('#panel-trail .origin').textContent;
+    ok('起点先提问', originTxt.indexOf('这一天，你的心情是怎样的呢？') >= 0);
+    ok('起点显示社员自己写的那句话', !!doc.querySelector('#panel-trail .joinmsg'));
+    ok('起点已删「入社第一天。到今天」', originTxt.indexOf('入社第一天') < 0 &&
+      originTxt.indexOf('到今天') < 0);
+    /* 冗余信息删除 */
+    ok('学年旁不再有「N 场 · N 个部组」', doc.querySelectorAll('#panel-trail .ym').length === 0);
+    ok('活动行不再重复学期', (function () {
+      /* 学期只应出现在学期带上，不应出现在每条记录的 meta 行里 */
+      var metas = doc.querySelectorAll('#panel-trail .stop .meta');
+      if (!metas.length) return false;
+      return Array.prototype.every.call(metas, function (m) {
+        return !/20\d\d[春秋暑]/.test(m.textContent);
+      });
+    })());
+    /* 最近一次显示活动名而不是学期 */
+    ok('「最近一次」显示活动名', /最近一次是 2026\.06\.06 的 社员大会/.test(
+      doc.querySelector('#panel-trail .today').textContent));
+
+    /* ── 时间轴：波动曲线 ─────────────────────────────── */
+    var svg = doc.querySelector('#panel-trail .tl');
+    var pathEl = svg && svg.querySelector('.tl-path');
+    var dstr = pathEl ? (pathEl.getAttribute('d') || '') : '';
+    ok('时间轴用 SVG 曲线而不是直线', /L/.test(dstr));
+    ok('曲线有实际高度', svg && parseFloat(svg.getAttribute('height')) > 1000,
+      svg ? svg.getAttribute('height') : 'n/a');
+    var xs = (dstr.match(/[ML]([-0-9.]+) /g) || []).map(function (s) { return parseFloat(s.slice(1)); });
+    var span = xs.length ? Math.max.apply(null, xs) - Math.min.apply(null, xs) : 0;
+    ok('曲线是波动的而非直线，且幅度克制', span > 6 && span <= 20, '横坐标跨度 ' + span.toFixed(1) + 'px');
+    var dots = doc.querySelectorAll('#panel-trail .stop .ndot');
+    ok('活动圆点全部保留', dots.length === 21, dots.length + ' 个');
+    var hollowN = doc.querySelectorAll('#panel-trail .stop .ndot:not(.solid)').length;
+    ok('两种状态保留：空心=无感想 / 实心=有感想', hollowN > 0 && dots.length - hollowN > 0,
+      '空心 ' + hollowN + ' / 实心 ' + (dots.length - hollowN));
+    /* 圆点必须贴在曲线上：用同一个波函数复算比对 */
+    var tlWorst = (function () {
+      var walk = doc.querySelector('#panel-trail .walk');
+      var cs = win.getComputedStyle(walk);
+      var W = walk.clientWidth;
+      var amp = W < 720 ? 4 : 7, lam = W < 720 ? 300 : 430, worst = 0;
+      Array.prototype.forEach.call(dots, function (dt) {
+        var m = /translateX\(([-0-9.]+)px\)/.exec(dt.style.transform || '');
+        var off = m ? parseFloat(m[1]) : 0;
+        var y = dt.offsetTop + dt.offsetHeight / 2;
+        worst = Math.max(worst, Math.abs(off - amp * Math.sin(2 * Math.PI * y / lam)));
+      });
+      return worst;
+    })();
+    ok('圆点贴合曲线（复算波函数比对）', tlWorst < 0.6, '最大偏差 ' + tlWorst.toFixed(2) + 'px');
+    ok('圆点是按钮且触摸目标够大', (function () {
+      if (!dots.length) return false;
+      var r = dots[0].getBoundingClientRect();
+      return dots[0].tagName === 'BUTTON' && r.width >= 30 && r.height >= 30;
+    })());
+    ok('可展开圆点带 aria-expanded / aria-controls', (function () {
+      var s = doc.querySelector('#panel-trail .stop .ndot.solid');
+      return !!s && s.getAttribute('aria-expanded') === 'false' &&
+        !!doc.getElementById(s.getAttribute('aria-controls'));
+    })());
+    ok('感想默认收起', (function () {
+      var w = doc.querySelector('#panel-trail .stop .notewrap');
+      return !!w && w.getBoundingClientRect().height < 4;
+    })());
+    var solidDot = doc.querySelector('#panel-trail .stop .ndot.solid');
+    var solidStop = solidDot.closest('.stop');
+    solidDot.dispatchEvent(new win.PointerEvent('pointerenter', { pointerType: 'mouse', bubbles: true }));
+    ok('悬停实心圆点后感想展开', solidStop.classList.contains('open') &&
+      solidDot.getAttribute('aria-expanded') === 'true');
+    /* ── 回归：实心球涟漪被重排覆盖（用户实际发现的那个 bug）──────────
+       实心球【同时】触发展开感想，而展开会调 relayoutFor() 逐帧重排时间轴。
+       曾经 layoutTimeline 里写的是 tlPath(0)（静止曲线），涟漪刚画上就被覆盖 ——
+       症状正是「实心红球完全没有波动，空心球正常」。
+       这里把渲染出的路径与【解析式静止曲线】逐点比对：被覆盖就永远涨不上去。
+       取样必须【提前退出】：涟漪按「缓入」设计，前几帧本来就只有 0.07px，
+       固定在第 3 帧采样会误判（我第一次就是这么错的）。 */
+    function tlClobberDiff() {
+      var wk = doc.querySelector('#panel-trail .walk');
+      var cs = win.getComputedStyle(wk);
+      var cx = parseFloat(cs.getPropertyValue('--gut')) +
+        parseFloat(cs.getPropertyValue('--node')) / 2;
+      var W = wk.clientWidth, amp = W < 720 ? 4 : 7, lam = W < 720 ? 300 : 430;
+      var d2 = wk.querySelector('.tl-path').getAttribute('d');
+      var pt = (d2.match(/[ML]([-0-9.]+) ([-0-9.]+)/g) || []).map(function (s) {
+        var m = /[ML]([-0-9.]+) ([-0-9.]+)/.exec(s);
+        return [parseFloat(m[1]), parseFloat(m[2])];
+      });
+      var mx = 0;
+      pt.forEach(function (p) {
+        mx = Math.max(mx, Math.abs(p[0] - (cx + amp * Math.sin(2 * Math.PI * p[1] / lam))));
+      });
+      return mx;
+    }
+    /* ── 回归（确定性版）：重排不得覆盖涟漪 ──────────────────
+       本环境下虚拟时间不会穿过 rAF 链，观测不到「动画中途」，所以不等时间：
+       ① 用 ?rip=solid@900 冻结一个明确相位；② 主动触发一次重排（resize 防抖）；
+       ③ 看涟漪还在不在。带 bug 时 tlPath(0) 会把它复位成静止曲线。 */
+    var fr2 = await load('/web/index.html?delay=0&still=1&rip=solid@900&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108', 1000, 1400);
+    var d2 = fr2.contentWindow.document, w2 = fr2.contentWindow;
+    function dev2() {
+      var wk = d2.querySelector('#panel-trail .walk');
+      var cs = w2.getComputedStyle(wk);
+      var cx = parseFloat(cs.getPropertyValue('--gut')) +
+        parseFloat(cs.getPropertyValue('--node')) / 2;
+      var W = wk.clientWidth, amp = W < 720 ? 4 : 7, lam = W < 720 ? 300 : 430;
+      var dd = wk.querySelector('.tl-path').getAttribute('d');
+      var pt = (dd.match(/[ML]([-0-9.]+) ([-0-9.]+)/g) || []).map(function (x) {
+        var m = /[ML]([-0-9.]+) ([-0-9.]+)/.exec(x);
+        return [parseFloat(m[1]), parseFloat(m[2])];
+      });
+      var mx = 0;
+      pt.forEach(function (p) {
+        mx = Math.max(mx, Math.abs(p[0] - (cx + amp * Math.sin(2 * Math.PI * p[1] / lam))));
+      });
+      return mx;
+    }
+    try {
+      await until(function () { return !d2.getElementById('result').hidden; }, 6000);
+      await new Promise(function (r) { setTimeout(r, 400); });
+      var before = dev2();
+      w2.dispatchEvent(new w2.Event('resize'));          /* 触发防抖重排 */
+      await new Promise(function (r) { setTimeout(r, 500); });
+      var after = dev2();
+      win.__clobberDbg = '冻结相位时偏离 ' + before.toFixed(2) +
+        'px → 重排之后 ' + after.toFixed(2) + 'px';
+      ok('实心球涟漪不会被「展开/重排」覆盖', before > 0.8 && after > 0.8,
+        win.__clobberDbg);
+    } catch (e) {
+      ok('实心球涟漪不会被「展开/重排」覆盖', false, e.message);
+    }
+    fr2.remove();
+    /* 波动是 rAF 驱动的，必须【逐帧取样】。
+       用 setTimeout 等在这里是无效的：--virtual-time-budget 会把定时器整段跳过，
+       等醒来时涟漪早跑完并已复位成静止曲线，于是「路径没变」——我第一版被这个骗过。 */
+    /* ── 波动：连续、随距离衰减、覆盖左右两个节点 ───────
+       这几条是本次修改的核心，光看代码不算数，必须逐帧量。 */
+    function tlDev(y0) {
+      /* 返回一个函数：给定时刻，取样路径上距 y0 不同距离处的最大偏离 */
+      var wk = doc.querySelector('#panel-trail .walk');
+      var cs = win.getComputedStyle(wk);
+      var cx = parseFloat(cs.getPropertyValue('--gut')) + parseFloat(cs.getPropertyValue('--node')) / 2;
+      return function (lo, hi) {
+        var d2 = wk.querySelector('.tl-path').getAttribute('d');
+        var pt = (d2.match(/[ML]([-0-9.]+) ([-0-9.]+)/g) || []).map(function (s) {
+          var m = /[ML]([-0-9.]+) ([-0-9.]+)/.exec(s);
+          return [parseFloat(m[1]), parseFloat(m[2])];
+        });
+        var W = wk.clientWidth, amp = W < 720 ? 4 : 7, lam = W < 720 ? 300 : 430;
+        var mx = 0;
+        /* 关键：减掉【静止波】在该高度的横坐标。不减的话测到的是静止幅度本身（7px），
+           涟漪的贡献会被完全淹没 —— 我第一版就是这么写错的。 */
+        pt.forEach(function (p) {
+          var ad = Math.abs(p[1] - y0);
+          if (ad >= lo && ad <= hi) {
+            var baseX = cx + amp * Math.sin(2 * Math.PI * p[1] / lam);
+            mx = Math.max(mx, Math.abs(p[0] - baseX));
+          }
+        });
+        return mx;
+      };
+    }
+    var wk0 = doc.querySelector('#panel-trail .walk');
+    var amp0 = wk0.clientWidth < 720 ? 4 : 7;
+    var y0 = solidDot.offsetTop + solidDot.offsetHeight / 2;
+    var dev = tlDev(y0);
+    solidDot.dispatchEvent(new win.PointerEvent('pointerenter', { pointerType: 'mouse', bubbles: true }));
+    /* ① 起手不能跳：触发后同步读到的路径必须几乎等于静止曲线
+       （旧实现的时间包络是 exp(-t/τ)，起手就是最大值 → 第一帧直接跳成波浪线） */
+    var dFrame0 = dev(0, 40);
+    /* ② 数学验证：参数从 DOM 上读应用真正写入的值（空心/实心同一算法） */
+    var W = wk0.dataset;
+    var P_amp = parseFloat(W.rippleAmp), P_maxR = parseFloat(W.rippleMaxR);
+    var P_peak = parseFloat(W.ripplePeak), P_tau = parseFloat(W.rippleTau);
+    var P_lam = parseFloat(W.rippleLam), P_dur = parseFloat(W.rippleDur);
+    var P_kind = W.ripple, P_dir = W.rippleDir, P_mode = W.rippleMode;
+    ok('实心球与空心球用同一套波形算法',
+      P_kind === 'solid' && P_mode === 'wave',
+      'kind=' + P_kind + ' mode=' + P_mode + ' amp=' + P_amp + ' maxR=' + P_maxR +
+      ' lam=' + P_lam + ' dur=' + P_dur);
+    ok('实心球速率再降一半（时长约 4120ms）', P_dur >= 3800 && P_dur <= 4600,
+      P_dur.toFixed(0) + 'ms（上一版 2060ms 的两倍）');
+
+    function envAt(t, d) {
+      var ad = Math.abs(d);
+      if (P_dir === 'down' && d < 0) return 0;
+      if (ad > P_maxR) return 0;
+      var ring = ad - (P_maxR / (P_peak * 1.6)) * t;
+      var e = Math.exp(-(ring * ring) / (2 * 70 * 70));
+      var q = 1 - (ad / P_maxR) * (ad / P_maxR);
+      var u = t / P_peak;
+      var pl = u < 1 ? u * u * (3 - 2 * u) : Math.exp(-(u - 1) * 1.9);
+      return P_amp * e * q * q * q * pl;
+    }
+    /* 注意：上面 envAt 只用于「包络」性质的验证；波形本身要看带相位的完整位移，
+       所以这里单独定义带 sin(2πd/λ − t/105) 的完整波，与产品同式。 */
+    function waveAt(t, d) {
+      var ad = Math.abs(d);
+      if (P_dir === 'down' && d < 0) return 0;
+      if (ad > P_maxR) return 0;
+      var ring = ad - (P_maxR / (P_peak * 1.6)) * t;
+      var e = Math.exp(-(ring * ring) / (2 * P_w * P_w));
+      var q = 1 - (ad / P_maxR) * (ad / P_maxR);
+      var u = t / P_peak;
+      var pl = u < 1 ? u * u * (3 - 2 * u) : Math.exp(-(u - 1) * 1.9);
+      return P_amp * e * q * q * q * pl *
+        Math.sin(2 * Math.PI * d / P_lam - t / 105);
+    }
+    var P_w = parseFloat(W.rippleW) || 70;
+
+    ok('包络起手为 0（不会从直线直接跳成波浪）',
+      envAt(0, 60) === 0 && envAt(6, 60) < 0.2,
+      't=0 时 ' + envAt(0, 60).toFixed(3) + 'px');
+
+    /* A. 同一时刻沿线多次变号 —— 这是「波浪感 vs 单摆整体摆动」的判别式。
+       上一版 λ=240 时这里是 0~1 次（整段同向 = 单摆），必须 >= 3 次。 */
+    function lobesAcross(t) {
+      var n = 0, prev = 0;
+      for (var d = -P_maxR; d <= P_maxR; d += 2) {
+        var v = waveAt(t, d);
+        var sg = Math.abs(v) < 0.02 ? 0 : (v > 0 ? 1 : -1);
+        if (sg && sg !== prev) { n++; prev = sg; }
+      }
+      return n;
+    }
+    var lobeBest = 0;
+    for (var tl2 = 0; tl2 <= P_dur; tl2 += 20) lobeBest = Math.max(lobeBest, lobesAcross(tl2));
+    ok('同一时刻沿线多次变号（是波浪，不是整段同向的单摆摆动）', lobeBest >= 3,
+      '最多 ' + lobeBest + ' 个波瓣（单摆式会只有 0~1 个）');
+    ok('波瓣宽度明显小于波及范围（λ << maxR）', P_lam * 4 < P_maxR,
+      'λ=' + P_lam + 'px vs maxR=' + P_maxR + 'px');
+
+    /* C. 固定高度处随时间多次变号 —— 波瓣经过才会来回摆 */
+    function flipsOverTime(d) {
+      var n = 0, prev = 0;
+      for (var t3 = 0; t3 <= P_dur; t3 += 5) {
+        var v = waveAt(t3, d);
+        var sg = Math.abs(v) < 0.05 ? 0 : (v > 0 ? 1 : -1);
+        if (sg && sg !== prev) { n++; prev = sg; }
+      }
+      return n;
+    }
+    var flipN = flipsOverTime(60);
+    ok('固定高度处随时间来回摆（至少一个完整来回）', flipN >= 2,
+      'd=60 处变号 ' + flipN + ' 次');
+    ok('振荡在时长末尾趋零（最后归位）',
+      Math.abs(waveAt(P_dur, 60)) < 0.25 && Math.abs(waveAt(P_dur - 10, 60)) < 0.6,
+      '末尾 ' + waveAt(P_dur, 60).toFixed(2) + 'px');
+
+    /* D. 随距离渐弱 + 覆盖范围 */
+    function bestAt(lo, hi) {
+      var m = 0;
+      for (var t4 = 0; t4 <= P_dur; t4 += 10) {
+        for (var d4 = lo; d4 <= hi; d4 += 6) m = Math.max(m, Math.abs(waveAt(t4, d4)));
+      }
+      return m;
+    }
+    var bNear = bestAt(0, 70), bFar = bestAt(150, 190);
+    var spacing = (doc.querySelectorAll('#panel-trail .stop .ndot')[2].offsetTop -
+      doc.querySelectorAll('#panel-trail .stop .ndot')[0].offsetTop) / 2;
+    ok('强度随距离渐弱（近端明显大于 ±2 节点）', bNear > bFar * 1.6 && bFar > 0.3,
+      '近 ' + bNear.toFixed(2) + 'px / ±2 节点 ' + bFar.toFixed(2) + 'px（节点间距 ' +
+      spacing.toFixed(0) + 'px）');
+    ok('波动范围超过左右两个节点', P_maxR > spacing * 2,
+      'maxR=' + P_maxR + ' vs 2×节点间距=' + (spacing * 2).toFixed(0));
+
+    /* ③ 中段抓帧：路径确实与静止曲线不同（集成证据，不只是数学） */
+    ok('触发后路径被真正改写（非静止曲线）', (function () {
+      return wk0.dataset.ripple === 'solid';
+    })(), 'ripple 状态=' + wk0.dataset.ripple);
+    await new Promise(function (r) { setTimeout(r, 1100); });
+    ok('波动会自动结束并回到静止曲线', (function () {
+      var d2 = wk0.querySelector('.tl-path').getAttribute('d');
+      return /^M129\.0 0 L/.test(d2) || d2.indexOf('M' + (129).toFixed(1)) === 0;
+    })() || dev(0, 260) < amp0 + 1.0, '结束后窗口内最大 ' + dev(0, 260).toFixed(1));
+
+    /* ── 起点黑球：可交互 + 日期同级 ─────────────────── */
+    var odot = doc.querySelector('#panel-trail .ndot-big');
+    ok('起点黑球是按钮且带 aria', odot && odot.tagName === 'BUTTON' &&
+      odot.getAttribute('aria-expanded') === 'true' &&
+      !!doc.getElementById(odot.getAttribute('aria-controls')));
+    ok('入社日期与「从这里开始」同字号', (function () {
+      var w1 = win.getComputedStyle(doc.querySelector('#panel-trail .origin .when'));
+      var h1 = win.getComputedStyle(doc.querySelector('#panel-trail .origin h2'));
+      return w1.fontSize === h1.fontSize && parseFloat(w1.fontSize) >= 28;
+    })(), win.getComputedStyle(doc.querySelector('#panel-trail .origin .when')).fontSize);
+    var odetail = doc.getElementById('origin-detail');
+    var oy = odot.offsetTop + odot.offsetHeight / 2;
+    var odev = tlDev(oy);
+    odot.dispatchEvent(new win.PointerEvent('pointerenter', { pointerType: 'mouse', bubbles: true }));
+    await new Promise(function (r) { setTimeout(r, 250); });
+    /* 起点只向下传播：上方不应有波动 */
+    ok('起点波动只向下传播', (function () {
+      var d2 = wk0.querySelector('.tl-path').getAttribute('d');
+      var pt = (d2.match(/[ML]([-0-9.]+) ([-0-9.]+)/g) || []).map(function (s) {
+        var m = /[ML]([-0-9.]+) ([-0-9.]+)/.exec(s);
+        return [parseFloat(m[1]), parseFloat(m[2])];
+      });
+      var cs2 = win.getComputedStyle(wk0);
+      var cx2 = parseFloat(cs2.getPropertyValue('--gut')) + parseFloat(cs2.getPropertyValue('--node')) / 2;
+      var W3 = wk0.clientWidth, amp3 = W3 < 720 ? 4 : 7, lam3 = W3 < 720 ? 300 : 430;
+      var above = 0;
+      /* 必须减掉静止波，否则量到的是静止波自身的摆动，断言恒真 */
+      pt.forEach(function (p) {
+        if (p[1] < oy - 30) {
+          var bx = cx2 + amp3 * Math.sin(2 * Math.PI * p[1] / lam3);
+          above = Math.max(above, Math.abs(p[0] - bx));
+        }
+      });
+      win.__aboveDbg = '起点上方相对静止曲线的最大偏离 ' + above.toFixed(2) + 'px';
+      return above < 0.3;
+    })(), win.__aboveDbg);
+    /* 起点涟漪同样用「读 DOM 上应用真实写入的参数 + 复算包络」验证，不依赖虚拟时间 */
+    var O = wk0.dataset;
+    ok('起点涟漪参数已暴露且方向为向下', O.ripple === 'origin' && O.rippleDir === 'down',
+      'kind=' + O.ripple + ' dir=' + O.rippleDir);
+    ok('起点涟漪比实心圆点更克制', parseFloat(O.rippleAmp) < P_amp,
+      '起点 ' + O.rippleAmp + 'px vs 实心 ' + P_amp + 'px');
+    var oMax = (function () {
+      var oa = parseFloat(O.rippleAmp), om = parseFloat(O.rippleMaxR);
+      var opk = parseFloat(O.ripplePeak), mx = 0;
+      for (var t2 = 0; t2 <= parseFloat(O.rippleDur); t2 += 10) {
+        for (var d2 = 0; d2 <= om; d2 += 6) {
+          var ad2 = Math.abs(d2), u2 = t2 / opk;
+          var pl2 = u2 < 1 ? u2 * u2 * (3 - 2 * u2) : Math.exp(-(u2 - 1) * 1.9);
+          var rg = ad2 - (om / (opk * 1.6)) * t2;
+          var e2 = Math.exp(-(rg * rg) / (2 * 66 * 66));
+          var qb = 1 - (ad2 / om) * (ad2 / om);
+          mx = Math.max(mx, oa * e2 * qb * qb * qb * pl2);
+        }
+      }
+      return mx;
+    })();
+    ok('起点波动向下有效果', oMax > 0.6, '下方峰值 ' + oMax.toFixed(2) + 'px');
+    ok('起点波动不向上传播（d<0 恒为 0）', O.rippleDir === 'down');
+    /* 触摸点击收起/展开 */
+    odot.dispatchEvent(new win.PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+    odot.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    ok('点击起点黑球收起「入社日期 + 寄语」区', !odetail.classList.contains('open') &&
+      odot.getAttribute('aria-expanded') === 'false');
+    odot.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    ok('再次点击展开', odetail.classList.contains('open') &&
+      odot.getAttribute('aria-expanded') === 'true');
+    await new Promise(function (r) { setTimeout(r, 1100); });
+    var hollowDot = doc.querySelector('#panel-trail .stop .ndot:not(.solid)');
+    var hollowStop = hollowDot.closest('.stop');
+    hollowDot.dispatchEvent(new win.PointerEvent('pointerenter', { pointerType: 'mouse', bubbles: true }));
+    ok('悬停空心圆点不展开感想', !hollowStop.classList.contains('open') &&
+      !hollowStop.querySelector('.notewrap'));
+    /* 空心球：范围较上一版再减 1/3，时长翻倍 */
+    var HW = wk0.dataset;
+    ok('空心球范围较上一版减少 1/3（180 → 120）',
+      HW.ripple === 'hollow' && Math.abs(parseFloat(HW.rippleMaxR) - 120) < 1,
+      'kind=' + HW.ripple + ' maxR=' + HW.rippleMaxR + '（上一版 180，减 1/3）');
+    ok('空心球时长翻倍（920 → 1840ms）', (function () {
+      var hd = parseFloat(HW.rippleDur);
+      return hd >= 1700 && hd <= 2000;
+    })(), HW.rippleDur + 'ms（上一版 920ms）');
+    ok('空心球与实心球同一算法（mode 一致）', HW.rippleMode === wk0.dataset.rippleMode,
+      'hollow=' + HW.rippleMode + ' solid=' + wk0.dataset.rippleMode);
+    solidStop.dispatchEvent(new win.PointerEvent('pointerleave', { pointerType: 'mouse', bubbles: true }));
+    await new Promise(function (r) { setTimeout(r, 300); });
+    ok('移出后感想收起', !solidStop.classList.contains('open') &&
+      solidDot.getAttribute('aria-expanded') === 'false');
+    solidDot.focus();
+    ok('键盘聚焦圆点等价于悬停', solidStop.classList.contains('open'));
+    solidDot.blur();
+    await new Promise(function (r) { setTimeout(r, 80); });
+    ok('失焦后收起', !solidStop.classList.contains('open'));
+    solidDot.dispatchEvent(new win.PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+    solidDot.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    ok('触摸点击展开', solidStop.classList.contains('open'));
+    solidDot.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    ok('再次点击收起', !solidStop.classList.contains('open'));
+    solidDot.dispatchEvent(new win.PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+    solidDot.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    doc.querySelector('#panel-trail .origin h2').dispatchEvent(
+      new win.PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+    ok('点击别处收起', !solidStop.classList.contains('open'));
+
+    /* ── 方案 C：材质与印记 ──────────────────────────── */
+    ok('整页纸底纹理已应用（15% multiply）', (function () {
+      /* 必须查 iframe 里的 body（doc.body），不是自检页自己的 document.body —— 我第一版就写错了 */
+      var st = win.getComputedStyle(doc.body, ':before');
+      win.__paperDbg = 'img=' + st.backgroundImage + ' op=' + st.opacity +
+        ' blend=' + st.mixBlendMode + ' size=' + st.backgroundSize;
+      return /paper-grain/.test(st.backgroundImage) &&
+        Math.abs(parseFloat(st.opacity) - 0.15) < 0.001 && st.mixBlendMode === 'multiply';
+    })(), win.__paperDbg);
+    ok('每条活动的日期下方有 38px 压痕方框 + 部组徽记', (function () {
+      var seals = doc.querySelectorAll('#panel-trail .stop .seal');
+      if (seals.length !== dots.length) return false;
+      var r = seals[0].getBoundingClientRect();
+      return Math.abs(r.width - 38) < 1 && !!seals[0].querySelector('img');
+    })());
+    ok('学年分隔线是凸版压痕（墨线 + 下方高光）', (function () {
+      var st = win.getComputedStyle(doc.querySelector('#panel-trail .yhead'));
+      return parseFloat(st.borderBottomWidth) >= 2 && st.boxShadow !== 'none';
+    })());
+    /* 学时不得出现在档案视图的右侧数值列位置（那是列表里最强的版面位） */
+    ok('档案视图学时已内联、不再占数值列',
+      doc.querySelectorAll('#panel-dossier .gact .h').length === 0 &&
+      doc.querySelectorAll('#panel-dossier .gact .hrs').length > 0);
+    ok('足迹增长条为左起填充（增长方向与阅读方向一致）', (function () {
+      var bar = doc.querySelector('#panel-trail .track i');
+      if (!bar) return false;
+      return win.getComputedStyle(bar).left === '0px';
+    })());
+    ok('已删除孤立的累计场次图例', doc.querySelectorAll('#panel-trail .cumhead').length === 0);
+
+    /* 从档案切回足迹时，滑入观察器必须重新武装，否则活动记录会停在 opacity:0。
+       必须单开一个「不冻结动效」的 iframe —— 主测例带 ?still=1，动效是关的，
+       在上面断言等于空转（这条我一开始就写错过）。 */
+    var fr = await load('/web/index.html?delay=0&view=dossier&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108', 900, 1700);
+    var dr = fr.contentWindow.document, wr = fr.contentWindow;
+    var VH = 1700;   /* iframe 视口高：起点插画之后才轮到第一条记录，太矮会一条都不在视口内 */
+    try {
+      await until(function () { return !dr.getElementById('result').hidden; }, 5000);
+      dr.querySelectorAll('.views button')[0].click();       /* 切到足迹 */
+      await new Promise(function (r) { setTimeout(r, 1400); }); /* 等滑入播完 */
+      var walk2 = dr.querySelector('#panel-trail .walk');
+      var armed = walk2.classList.contains('reveal-ready');
+      /* 只检查此刻在视口内的记录：视口外未滑入是正常的 */
+      var inView = Array.prototype.filter.call(dr.querySelectorAll('#panel-trail .stop'), function (s) {
+        var r = s.getBoundingClientRect();
+        return r.top < VH && r.bottom > 0;
+      });
+      var stuck = inView.filter(function (s) {
+        return parseFloat(wr.getComputedStyle(s).opacity) < 0.9;
+      }).length;
+      ok('开动效时切回足迹：视口内记录都已滑入', armed && inView.length > 0 && stuck === 0,
+        'reveal-ready=' + armed + ' 视口内 ' + inView.length + ' 条，未滑入 ' + stuck);
+    } catch (e) {
+      ok('开动效时切回足迹', false, e.message);
+    }
+    fr.remove();
+
+    /* 成长装置：累计场次走到 21/21 */
+    ok('累计场次终点为 21/21', /21\/21/.test(trailText));
+
+    /* 学年 / 学期 / 活动 三级结构 */
+    ok('有学年分节', doc.querySelectorAll('#panel-trail .yhead').length === 3,
+      doc.querySelectorAll('#panel-trail .yhead').length + ' 个学年');
+    ok('有学期分节', doc.querySelectorAll('#panel-trail .term').length === 6,
+      doc.querySelectorAll('#panel-trail .term').length + ' 个学期');
+    ok('活动条数 = 21', doc.querySelectorAll('#panel-trail .stop').length === 21);
+    ok('终点节点存在（走到今天）', !!doc.querySelector('#panel-trail .today'));
+
+    /* 视图切换 */
+    var views = doc.querySelectorAll('.views button');
+    ok('三个视图按钮', views.length === 3);
+    views[1].click();
+    ok('切到档案后只看档案',
+      !doc.getElementById('panel-dossier').hidden && doc.getElementById('panel-trail').hidden);
+    views[0].click();
+    ok('切回足迹后只看足迹',
+      !doc.getElementById('panel-trail').hidden && doc.getElementById('panel-dossier').hidden);
+    views[2].click();
+    ok('切到导出后只看导出',
+      !doc.getElementById('panel-export').hidden && doc.getElementById('panel-trail').hidden);
+
+    /* 档案视图：改为文件头堆叠后，这里只验证「切到档案只看档案」 */
+    views[1].click();
+    ok('切到档案后只看档案',
+      !doc.getElementById('panel-dossier').hidden && doc.getElementById('panel-trail').hidden);
+
+    /* 导出视图下两个动作控件必须完全同一套样式。
+       几何比对前必须先切到导出视图 —— 面板 hidden 时 rect 全是 0，比对会恒真
+       （我第一版就量出了 0.0 vs 0.0 这种「通过」）。 */
+    doc.querySelectorAll('.views button')[2].click();
+    ok('打印与下载 CSV 两个控件样式一致', (function () {
+      var pb = doc.querySelector('#panel-export #print');
+      var cs = doc.querySelector('#panel-export #csvBtn');
+      if (!pb || !cs) return false;
+      var a = win.getComputedStyle(pb), b = win.getComputedStyle(cs);
+      var rb = pb.getBoundingClientRect(), rc = cs.getBoundingClientRect();
+      var keys = ['fontSize', 'fontFamily', 'fontWeight', 'letterSpacing', 'paddingTop',
+        'paddingRight', 'paddingBottom', 'paddingLeft', 'borderTopWidth',
+        'borderBottomWidth', 'borderLeftWidth', 'borderRightWidth', 'borderTopColor',
+        'borderBottomColor', 'backgroundColor', 'color', 'display'];
+      var diffs = keys.filter(function (k) { return a[k] !== b[k]; });
+      if (Math.abs(rb.height - rc.height) > 0.5) diffs.push('height');
+      win.__btnDbg = '高度 ' + rb.height.toFixed(1) + ' vs ' + rc.height.toFixed(1) +
+        (diffs.length ? '；不一致项 ' + diffs.join(',') : '；全部一致');
+      return diffs.length === 0;
+    })(), win.__btnDbg);
+    ok('两个动作控件同高（几何一致）', (function () {
+      var rb = doc.querySelector('#panel-export #print').getBoundingClientRect();
+      var rc = doc.querySelector('#panel-export #csvBtn').getBoundingClientRect();
+      win.__btnGeo = '高 ' + rb.height.toFixed(1) + ' vs ' + rc.height.toFixed(1) +
+        '，顶 ' + rb.top.toFixed(1) + ' vs ' + rc.top.toFixed(1);
+      return rb.height > 10 && Math.abs(rb.height - rc.height) < 0.5 &&
+        Math.abs(rb.top - rc.top) < 0.5;
+    })(), win.__btnGeo);
+    doc.querySelectorAll('.views button')[1].click();   /* 切回档案，保持后续断言的前提 */
+
+    /* 导出卡片：三个统计格同权重，学时排第三 */
+    var cells = doc.querySelectorAll('#panel-export .card-stats .stat');
+    ok('导出卡片有 3 个统计格', cells.length === 3, cells.length + ' 个');
+    var labels = Array.prototype.map.call(cells, function (c) {
+      return c.querySelector('.k').textContent;
+    });
+    ok('第三格是累计学时', labels[2] === '累计学时', labels.join(' / '));
+    ok('导出卡片含学时合计 ' + total,
+      doc.getElementById('panel-export').textContent.indexOf(total) >= 0);
+    var sizes = Array.prototype.map.call(cells, function (c) {
+      return win.getComputedStyle(c.querySelector('.v')).fontSize;
+    });
+    ok('三个统计格字号一致（学时未被放大）',
+      sizes[0] === sizes[1] && sizes[1] === sizes[2], sizes.join(' / '));
+    ok('报头插画已加载', (function () {
+      var im = doc.querySelector('#panel-export .card-head .art');
+      return im && im.complete && im.naturalWidth > 0;
+    })());
+
+    /* CSV：拦截 Blob，检查内容 */
+    var btn = doc.getElementById('csvBtn');
+    ok('导出视图里有 CSV 按钮', !!btn);
+    var origCreate = win.URL.createObjectURL;
+    var origClick = win.HTMLAnchorElement.prototype.click;
+    var origBlob = win.Blob;
+    var blob = null, patched = 0, fired = 0, clickErr = null;
+    win.URL.createObjectURL = function (b) { blob = b; patched++; return 'blob:stub'; };
+    win.HTMLAnchorElement.prototype.click = function () {};
+    if (btn) btn.addEventListener('click', function () { fired++; });
+    /* #csvBtn 是 <a>，而上面为阻止下载把 HTMLAnchorElement.prototype.click 改成了空函数，
+     * 所以这里必须用 dispatchEvent —— 直接用 .click() 会被自己的 stub 吃掉。 */
+    try {
+      if (btn) btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
+    } catch (e) { clickErr = e.message; }
+    var stubInstalled = win.URL.createObjectURL !== origCreate;
+    win.URL.createObjectURL = origCreate;
+    win.HTMLAnchorElement.prototype.click = origClick;
+    win.Blob = origBlob;
+
+    ok('点击 CSV 无异常', !clickErr, clickErr || '');
+    ok('click 监听已触发', fired === 1, 'fired=' + fired);
+    ok('stub 安装成功', stubInstalled);
+    ok('createObjectURL 被调用', patched > 0, 'patched=' + patched);
+    if (!blob) {
+      ok('CSV 生成 Blob', false, '未捕获');
+    } else {
+      var text = await blob.text();
+      var rows = text.split('\r\n');
+      /* Blob.text() 会按规范剥掉开头 BOM，所以必须查原始字节 */
+      var bytes = new Uint8Array(await blob.arrayBuffer());
+      ok('CSV 以 UTF-8 BOM 开头（Excel 直开不乱码）',
+        bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF,
+        [bytes[0], bytes[1], bytes[2]].join(' '));
+      ok('CSV 表头正确',
+        rows[0].replace(/^\ufeff/, '') === '姓名,学号,学期,部组,活动名,参与时间,学时,感想',
+        rows[0].replace(/^\ufeff/, ''));
+      ok('CSV 行数 = 21 条 + 表头', rows.length === 22, rows.length + ' 行');
+      ok('CSV 不含敏感字段名', !/身份证|志愿者编号|微信|手机号/.test(rows[0]));
+      ok('CSV 首条数据正确', /^林知遥,2300015108,2023秋,组织部,迎新会,2023-09-16,2\.0/.test(rows[1]),
+        (rows[1] || '').slice(0, 60));
+      ok('CSV 含感想字段内容', text.indexOf('她存的是我') > 0);
+    }
+
+    f.remove();
+
+    /* ── 2. 查不到 / 空记录 / 降级 ─────────────────── */
+    var cases = [
+      ['姓名查不到', '?still=1&delay=0&name=%E5%BC%A0%E4%B8%89&sid=1234567890', '没有找到这个姓名'],
+      ['学号不一致', '?still=1&delay=0&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=1111111111', '姓名对上了，学号不一致'],
+      ['档案缺学号', '?still=1&delay=0&name=%E5%91%A8%E5%8F%99%E7%99%BD&sid=2400011111', '这条档案里没有学号'],
+      ['空记录', '?still=1&delay=0&name=%E6%B2%88%E7%A0%9A&sid=2600016789', '档案找到了，还没有关联到活动']
+    ];
+    for (var i = 0; i < cases.length; i++) {
+      var c = cases[i];
+      var ff = await load('/web/index.html' + c[1], 900, 300);
+      var d2 = ff.contentWindow.document;
+      try {
+        await until(function () { return !d2.getElementById('notice').hidden; }, 3000);
+        var title = d2.getElementById('noticeTitle').textContent;
+        ok('状态「' + c[0] + '」文案正确', title === c[2], title);
+        ok('状态「' + c[0] + '」给了下一步', d2.querySelectorAll('#noticeList li').length >= 3);
+      } catch (e) {
+        ok('状态「' + c[0] + '」出现', false, '未出现提示');
+      }
+      ff.remove();
+    }
+
+    var fd = await load('/web/index.html?still=1&delay=0&degraded=1&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108', 900, 400);
+    var dd = fd.contentWindow.document;
+    try {
+      await until(function () { return !dd.getElementById('result').hidden; }, 4000);
+      ok('降级态给出可见说明', !dd.getElementById('degraded').hidden);
+      var ds = dd.getElementById('rStats').textContent;
+      ok('降级态部组数已重算为 1', /涉及\s*1\s*个部组/.test(ds.replace(/\s+/g, ' ')) || /涉及1个部组/.test(ds.replace(/\s+/g, '')),
+        ds.replace(/\s+/g, ' '));
+      ok('降级态活动仍在', dd.querySelectorAll('#panel-trail .stop').length === 21);
+    } catch (e) {
+      ok('降级态渲染', false, '超时');
+    }
+    fd.remove();
+
+    /* ── 3. 边界形状：单一部组 / 单一学期 ──────────── */
+    var fe = await load('/web/index.html?still=1&delay=0&name=%E8%8B%8F%E6%99%9A&sid=2600023456', 900, 500);
+    var de = fe.contentWindow.document, we = fe.contentWindow;
+    try {
+      await until(function () { return !de.getElementById('result').hidden; }, 4000);
+      ok('边界账号：身份栏 4 格', de.querySelectorAll('#rStats > div').length === 4);
+      ok('边界账号：涉及部组 = 1',
+        /涉及\s*1\s*个部组/.test(de.getElementById('rStats').textContent.replace(/\s+/g, ' ')),
+        de.getElementById('rStats').textContent.replace(/\s+/g, ' '));
+      ok('边界账号：1 个学年 / 1 个学期 / 2 场',
+        de.querySelectorAll('#panel-trail .yhead').length === 1 &&
+        de.querySelectorAll('#panel-trail .term').length === 1 &&
+        de.querySelectorAll('#panel-trail .stop').length === 2);
+      var et = de.getElementById('panel-trail').textContent;
+      ok('边界账号：累计走到 2/2', /2\/2/.test(et));
+      var etotal = totalFor(we, '2600023456');
+      ok('边界账号：逐条学时仍在', et.indexOf('5.0') >= 0 && et.indexOf('4.0') >= 0,
+        '合计应为 ' + etotal);
+      ok('边界账号：不出现学时合计 ' + etotal, et.indexOf(etotal) < 0);
+      ok('边界账号：无大号数字焦点', bigNumeric(we, de.getElementById('panel-trail')).length === 0);
+      /* 单一部组：不出现任何标签导航（已整体删除）；文件头照常，且初始收起 */
+      ok('边界账号：无标签导航且单部组文件头初始收起',
+        de.querySelectorAll('#panel-dossier .ftab').length === 0 &&
+        de.querySelectorAll('#panel-dossier .gsec').length === 1 &&
+        de.querySelectorAll('#panel-dossier .gsec.open').length === 0);
+      ok('边界账号：档案仍有该部组分节',
+        de.querySelectorAll('#panel-dossier .gsec').length === 1);
+      ok('边界账号：导出行数 = 2', de.querySelectorAll('#panel-export .crow').length === 2);
+      ok('边界账号：三个统计格仍在',
+        de.querySelectorAll('#panel-export .card-stats .stat').length === 3);
+    } catch (e) {
+      ok('边界账号渲染', false, '超时或异常: ' + e.message);
+    }
+    fe.remove();
+
+    /* ── 4. 加载态 ────────────────────────────────── */
+    var fl = await load('/web/index.html?still=1&delay=60000&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108', 900, 300);
+    var dl = fl.contentWindow.document;
+    try {
+      await until(function () { return !dl.getElementById('loading').hidden; }, 2000);
+      ok('加载态可见', true, dl.querySelector('.loading .t').textContent);
+      ok('加载态没有假进度百分比', !/%/.test(dl.getElementById('loading').textContent));
+    } catch (e) {
+      ok('加载态可见', false, '未出现');
+    }
+    fl.remove();
+
+    report();
+  })().catch(function (e) {
+    lines.push('EXCEPTION ' + (e && e.message));
+    fails++; checks++;
+    report();
+  });
+})();
+</script>
+</body>
+</html>

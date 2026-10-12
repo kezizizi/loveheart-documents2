@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
-from config import MEMBER_READ_WHITELIST
+from config import CO_PARTNER_CAP, MEMBER_READ_WHITELIST
 from feishu import schema as S
 from feishu.client import SchemaChangedError
 from feishu.models import (
@@ -107,10 +107,28 @@ class MemberQueryResult:
     searched_bases: tuple[str, ...] = ()
     #: 仅在 ``found is False`` 时有值，取值见 ``NOT_FOUND_*``
     not_found_reason: str | None = None
+    #: 「与 N 位伙伴同行」的人数。``None`` = 统计不到（一张表都扫不动），
+    #: 与 0（真的一个同场伙伴都没有）**必须区分** —— 0 会谎称「没有伙伴」。
+    co_partners: int | None = None
+    #: 参与过的活动表超过 ``CO_PARTNER_CAP`` 时为 True —— 此时人数是**下界**
+    co_partners_truncated: bool = False
 
     @property
     def low_confidence_count(self) -> int:
         return sum(1 for p in self.participations if p.confidence == CONFIDENCE_LOW)
+
+
+@dataclass(frozen=True)
+class CollectedRecords:
+    """一次采集的完整产物：参与记录 + 失败信息 + 同行伙伴姓名集合。"""
+
+    participations: tuple[Participation, ...] = ()
+    errors: tuple[str, ...] = ()
+    #: 归一化后的同场伙伴姓名（**只在内存里用来数人头，绝不外传**）
+    partner_names: frozenset[str] = frozenset()
+    #: 实际扫成功的活动表张数。为 0 表示「统计不到」，而不是「没有伙伴」。
+    tables_scanned: int = 0
+    partners_truncated: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -394,14 +412,73 @@ def linked_tables(
     return out
 
 
-def collect_participations(
+def scan_table_names(client: BitableClient, table: ActivityTable) -> set[str] | None:
+    """扫一张活动表的「姓名」列，返回归一化后的姓名集合。
+
+    只投影**姓名一列**：这是「与谁同行」唯一需要的东西，也把读到的个人信息压到最小
+    （绝不顺带把别人的感想、正文拉进内存）。
+
+    返回值刻意三态：
+    * ``None`` —— 这张表扫不动（没有姓名列，或请求失败）；
+    * ``set()`` —— 扫到了，但一张报名记录都没有；
+    * 非空集合 —— 姓名集合。
+
+    上层要靠 ``None`` 与空集的差别来区分「统计不到」和「真的没有伙伴」。
+    """
+    name_field = table.name_field
+    if not name_field:
+        return None
+    try:
+        rows = client.search_records(
+            table.base_token, table.table_id, field_names=[name_field]
+        )
+    except SchemaChangedError:
+        # 结构变更不是「这张表读不到」，而是整份注册表都过时了，必须穿透（见 CLAUDE.md §9）
+        raise
+    except Exception:  # noqa: BLE001 - 单表失败不影响其他表
+        return None
+
+    names: set[str] = set()
+    for row in rows:
+        text = S.cell_text((row.get("fields") or {}).get(name_field))
+        normalized = text.replace(" ", "")
+        if normalized:
+            names.add(normalized)
+    return names
+
+
+def _fetch_table(
+    client: BitableClient,
+    table: ActivityTable,
+    record_ids: tuple[str, ...],
+    *,
+    with_partners: bool,
+) -> tuple[list[Participation], int, set[str]]:
+    """一张表的全部工作，跑在线程池里的那个任务。
+
+    顺序执行 **两次** 请求：先按关联 record_id 取本人记录，再扫本表姓名列。
+    两次都落在同一张表、同一个任务里，所以并发度不损失 —— 墙钟时间约等于
+    「单张表两次串行请求」，而不是「所有表各扫一遍」。
+    """
+    participations = _fetch_linked(client, table, record_ids)
+    if not with_partners:
+        return participations, 0, set()
+    names = scan_table_names(client, table)
+    if names is None:
+        return participations, 0, set()
+    return participations, 1, names
+
+
+def collect_records(
     client: BitableClient,
     registry: ActivityRegistry,
     member: MergedMember,
     *,
     max_workers: int = 8,
-) -> tuple[list[Participation], list[str]]:
-    """并发采集该人的活动参与记录。单表失败被隔离。
+    with_partners: bool = False,
+    partner_cap: int = CO_PARTNER_CAP,
+) -> CollectedRecords:
+    """并发采集该人的活动参与记录（可选：顺带数出同行伙伴）。
 
     范围由 :func:`linked_tables` 决定：**只查主表里有该人关联记录的那几张表**，
     其余一张都不碰（连空表都不用问）。没有关联就是没有参与记录。
@@ -411,34 +488,68 @@ def collect_participations(
     —— 那不是优化，是把配额烧光。
     ``tests/test_member_query.py::test_collect_participations_never_widens_scope``
     是守卫测试。
+
+    ``with_partners=True`` 时对**同一批**表额外扫一次姓名列（每表 +1 次请求），
+    上限 ``partner_cap`` 张；超出则 ``partners_truncated`` 置位，人数是下界。
+    因为共用同一个线程池，这一项不会让墙钟时间翻倍。
     """
     targets = linked_tables(registry, member)
     if not targets:
-        return [], []
+        return CollectedRecords()
+
+    truncated = with_partners and len(targets) > partner_cap
+    if with_partners and truncated:
+        targets = targets[:partner_cap]
 
     participations: list[Participation] = []
     errors: list[str] = []
+    partner_names: set[str] = set()
+    scanned = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(_fetch_linked, client, table, ids): table
+            pool.submit(
+                _fetch_table, client, table, ids, with_partners=with_partners
+            ): table
             for table, ids in targets
         }
         for future in as_completed(futures):
             table = futures[future]
             try:
-                participations.extend(future.result())
+                rows, hit, names = future.result()
             except SchemaChangedError:
                 # 结构变更不是「这一张表读不到」，而是整份注册表都过时了。
                 # 必须穿透隔离抛上去，让上层重建注册表后重试。
                 raise
             except Exception as exc:  # noqa: BLE001 - 单表失败隔离
                 errors.append(f"读取活动「{table.name}」失败：{exc}")
+                continue
+            participations.extend(rows)
+            scanned += hit
+            partner_names |= names
 
     participations.sort(
         key=lambda p: (p.event_time_ms or p.record_created_ms or 0, p.activity_name)
     )
-    return participations, errors
+    return CollectedRecords(
+        participations=tuple(participations),
+        errors=tuple(errors),
+        partner_names=frozenset(partner_names),
+        tables_scanned=scanned,
+        partners_truncated=truncated,
+    )
+
+
+def collect_participations(
+    client: BitableClient,
+    registry: ActivityRegistry,
+    member: MergedMember,
+    *,
+    max_workers: int = 8,
+) -> tuple[list[Participation], list[str]]:
+    """只要参与记录（不数同行伙伴）。保持原有的二元返回值。"""
+    got = collect_records(client, registry, member, max_workers=max_workers)
+    return list(got.participations), list(got.errors)
 
 
 # --------------------------------------------------------------------------
@@ -454,8 +565,15 @@ def query_member(
     sid: str,
     *,
     max_workers: int = 8,
+    want_partners: bool = False,
 ) -> MemberQueryResult:
-    """按姓名 + 学号查询一个人的完整爱心足迹。"""
+    """按姓名 + 学号查询一个人的完整爱心足迹。
+
+    ``want_partners=True`` 时**顺带**数出「与 N 位伙伴同行」。它不是白拿的：
+    要对同一批活动表各多发一次「只取姓名列」的请求（每表 +1，上限
+    ``CO_PARTNER_CAP`` 张），但和取数共用同一个线程池，墙钟时间几乎不变。
+    新前端的身份栏默认就要显示这个数字，所以由调用方按需开启。
+    """
     records: list[MemberRecord] = []
     # 注册表构建期的失败（某库 403、某张表读不到）必须一并透出，
     # 否则用户会以为「没参加过」，而实际是「没查到」。
@@ -489,15 +607,28 @@ def query_member(
     member = merge_members(records)
     assert member is not None  # records 非空
 
-    participations, perr = collect_participations(
-        client, registry, member, max_workers=max_workers
+    got = collect_records(
+        client,
+        registry,
+        member,
+        max_workers=max_workers,
+        with_partners=want_partners,
     )
-    errors.extend(perr)
+    errors.extend(got.errors)
+
+    # 只出人数、不出姓名；一张表都扫不动时给 None（视图显示「—」），绝不退回 0
+    co_partners: int | None = None
+    if want_partners:
+        others = set(got.partner_names)
+        others.discard(member.name.replace(" ", ""))
+        co_partners = len(others) if got.tables_scanned else None
 
     return MemberQueryResult(
         found=True,
         member=member,
-        participations=tuple(participations),
+        participations=got.participations,
         errors=tuple(errors),
         searched_bases=tuple(searched),
+        co_partners=co_partners,
+        co_partners_truncated=got.partners_truncated,
     )

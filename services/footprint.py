@@ -13,7 +13,6 @@ from config import (
     group_color,
     term_sort_value,
 )
-from feishu import schema as S
 from feishu.models import ActivityRegistry, Footprint, Participation, TimelineItem
 from feishu.protocol import BitableClient
 from services.identity import MergedMember
@@ -146,12 +145,20 @@ def count_co_partners(
     """统计同场活动的其他参与者数量。
 
     需要扫活动表的「姓名」列，成本较高，因此：
-    * 只在用户主动点击时调用；
     * 最多扫 ``cap`` 张表；超出则把 truncated 置 True；
     * 单表失败静默跳过，不影响其他表。
 
     返回 ``(人数, 是否被截断)``；一张表都扫不到时返回 ``(None, False)``。
+
+    取数细节（只投影姓名列、失败与空集的三态区分）统一在
+    ``feishu.member_query.scan_table_names`` 里，这里不重复实现一遍。
+
+    注意上面那句 import 必须写在函数体里：``feishu.member_query`` 依赖
+    ``services.identity``，而 ``services/__init__`` 又会导入本模块 ——
+    在模块顶层 import 会立刻撞成循环导入。
     """
+    from feishu.member_query import scan_table_names
+
     table_ids = _dedupe(p.table_id for p in participations)
     truncated = len(table_ids) > cap
     table_ids = table_ids[:cap]
@@ -164,22 +171,11 @@ def count_co_partners(
         table = by_id.get(table_id)
         if table is None:
             continue
-        name_field = table.name_field
-        if not name_field:
-            continue
-        try:
-            rows = client.search_records(
-                table.base_token, table.table_id, field_names=[name_field]
-            )
-        except Exception:  # noqa: BLE001 - 单表失败不影响整体
+        found = scan_table_names(client, table)
+        if found is None:
             continue
         scanned += 1
-        for row in rows:
-            fields = row.get("fields") or {}
-            text = S.cell_text(fields.get(name_field))
-            normalized = text.replace(" ", "")
-            if normalized:
-                names.add(normalized)
+        names |= found
 
     names.discard(member.name.replace(" ", ""))
     if scanned == 0:

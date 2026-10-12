@@ -45,3 +45,7 @@ docs/平面设计常用素材/
 # ---- 社员档案导出件：含姓名/学号/院系等个人信息，绝不入库 ----
 docs/*.xlsx
 docs/*.xls
+
+# ---- 前端验证产物：截图与一次性浏览器 profile（脚本随时可以重新生成） ----
+static/_work/e2e-shots/
+static/_work/.edge-profile*/

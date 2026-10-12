@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>量档案行距</title></head>
+<body>
+<pre id="out">measuring…</pre>
+<iframe id="f" style="border:0;position:absolute;left:-9999px;width:1440px;height:4000px"
+  src="/web/index.html?still=1&delay=0&view=dossier&name=%E6%9E%97%E7%9F%A5%E9%81%A5&sid=2300015108"></iframe>
+<script>
+/* 量「相邻两行内容之间的空白」：上一行内容底 -> 下一行内容顶。
+   如果这个值在不同行之间跳动，就是用户看到的「空白不稳定」。 */
+document.getElementById('f').onload = function () {
+  var d = this.contentDocument, w = this.contentWindow;
+  setTimeout(function () {
+    var out = [];
+    document.querySelectorAll;
+    var secs = d.querySelectorAll('#panel-dossier .gsec');
+    secs.forEach(function (sec, si) {
+      if (si > 1) return;
+      var rows = sec.querySelectorAll('.gact');
+      out.push('--- 部组 ' + si + '  (' + rows.length + ' 行)');
+      var prevBottom = null;
+      rows.forEach(function (r, i) {
+        var rb = r.getBoundingClientRect();
+        var cells = r.children;
+        var contentBottom = -1e9, contentTop = 1e9;
+        for (var k = 0; k < cells.length; k++) {
+          var cb = cells[k].getBoundingClientRect();
+          contentBottom = Math.max(contentBottom, cb.bottom);
+          contentTop = Math.min(contentTop, cb.top);
+        }
+        var note = r.querySelector('.note');
+        out.push('  行' + i +
+          '  行高=' + Math.round(rb.height) +
+          '  行内下留白=' + Math.round(rb.bottom - contentBottom) +
+          '  行内上留白=' + Math.round(contentTop - rb.top) +
+          (prevBottom === null ? '' : '  与上一行内容间距=' + Math.round(contentTop - prevBottom)) +
+          (note ? '  [有感想]' : ''));
+        prevBottom = contentBottom;
+      });
+    });
+    document.getElementById('out').textContent = out.join('\n');
+  }, 900);
+};
+</script>
+</body></html>
