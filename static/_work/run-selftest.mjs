@@ -151,10 +151,10 @@ const PAGE_STATE = `JSON.stringify({
 await send('Page.navigate', { url: `http://127.0.0.1:${webPort}/web/index.html?still=1&delay=0` });
 await sleep(2500);
 
-const submitForm = () => evalJs(`(() => {
+const submitForm = (name = '林知遥', sid = '2300015108') => evalJs(`(() => {
   const f = document.getElementById('form');
-  f.elements.namedItem('name').value = '林知遥';
-  f.elements.namedItem('sid').value = '2300015108';
+  f.elements.namedItem('name').value = ${JSON.stringify(name)};
+  f.elements.namedItem('sid').value = ${JSON.stringify(sid)};
   f.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   return 'ok';
 })()`);
@@ -174,6 +174,62 @@ ok('独立形态：首次提交出结果', first.result === true, JSON.stringify
 ok('独立形态：点「重新查询」回到入口', afterAgain.entry === true, JSON.stringify(afterAgain));
 ok('独立形态：同一个人再查一次仍然出结果（不会卡在加载态）',
   second.result === true && second.loading === false, JSON.stringify(second));
+
+/* ── 5) 「没读全」与「真的没关联」必须分开说（红线 3.16）─────────────
+ * 用户真实报过：某个库的主表没读到 → 0 场活动 → 页面说「你的记录还没建立关联，
+ * 请联系骨干补上」。他其实有 14 场活动 —— 系统故障被说成了他的数据没补全。
+ * 后端现在会用 unreadBases 如实告知，前端必须据此换一套话：
+ *   没读全  → 「这次没能读全你的档案」（系统侧，稍等重试）
+ *   读全了却为空 → 「档案找到了，还没有关联到活动」（数据侧，找骨干）
+ * 两句话的用户动作完全相反，混了就是让人白跑。
+ * 用 ?incomplete=1 造出这一态（与 ?degraded=1 同样是演示开关）。 */
+const NOTICE = `JSON.stringify({
+  notice: !document.getElementById('notice').hidden,
+  title: document.getElementById('noticeTitle').textContent,
+  result: !document.getElementById('result').hidden,
+  banner: document.getElementById('degraded').hidden
+    ? null : document.getElementById('degraded').textContent
+})`;
+const goto = async (q) => {
+  await send('Page.navigate', { url: `http://127.0.0.1:${webPort}/web/index.html?still=1&delay=0${q}` });
+  await sleep(2200);
+};
+
+/* 沈砚 = 档案在、但一场活动都没有（mock-db 里的空记录账号） */
+await goto('&incomplete=1');
+await submitForm('沈砚', '2600016789');
+await sleep(1400);
+const emptyIncomplete = JSON.parse(await evalJs(NOTICE));
+ok('独立形态：有库没读到 + 0 场活动 → 说「没能读全」，不是「没建关联」',
+  emptyIncomplete.notice === true
+    && emptyIncomplete.title.indexOf('没能读全') >= 0
+    && emptyIncomplete.title.indexOf('没有关联到活动') < 0,
+  emptyIncomplete.title);
+
+/* 同一份数据、但没有「没读全」这个事实 → 才该说数据侧那套话 */
+await goto('');
+await submitForm('沈砚', '2600016789');
+await sleep(1400);
+const emptyComplete = JSON.parse(await evalJs(NOTICE));
+ok('独立形态：读全了却为空 → 仍然说「还没关联到活动」',
+  emptyComplete.notice === true && emptyComplete.title.indexOf('没有关联到活动') >= 0,
+  emptyComplete.title);
+
+/* 有活动但不完整：结果照常显示，同时挂一条实话 */
+await goto('&incomplete=1');
+await submitForm();
+await sleep(1400);
+const partial = JSON.parse(await evalJs(NOTICE));
+ok('独立形态：有活动但没读全 → 照常出结果，并挂出「没读全」的说明条',
+  partial.result === true && !!partial.banner && partial.banner.indexOf('没能读全') >= 0,
+  `result=${partial.result} banner=${partial.banner}`);
+
+await goto('');
+await submitForm();
+await sleep(1400);
+const clean = JSON.parse(await evalJs(NOTICE));
+ok('独立形态：读全了就不该出现任何说明条', clean.result === true && clean.banner === null,
+  `banner=${clean.banner}`);
 
 console.log('');
 console.log('----- 独立形态交互回归 -----');

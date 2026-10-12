@@ -115,6 +115,18 @@
         '请联系骨干补上关联，之后这里就会出现'
       ]
     },
+    /* 「读到了档案，但有的库没读到」时用这一档。
+       🚩 绝不与 EMPTY 合并：EMPTY 说的是「你的记录还没建关联，去找骨干补」，
+       而这里的问题在系统这一侧（限流 / 网络 / 权限）。把后者说成前者，社员会
+       白跑去找骨干，而真正该做的是稍等重试 —— 这正是用户报过的那次。 */
+    INCOMPLETE: {
+      t: '这次没能读全你的档案',
+      b: '有个学年的库这次没读到，和你的信息无关。',
+      l: [
+        '稍等一会儿再点一次「查看我的足迹」',
+        '一直这样的话，请把当时的页面截图发给社里的骨干'
+      ]
+    },
     /* 后端「检索一次都没成功」时用这一档。
        绝不与 NOT_FOUND_NAME 合并 —— 把「我们没查成」说成「没有这个姓名」，
        会把社员引向补录问卷，而问题其实在系统这一侧。 */
@@ -165,12 +177,33 @@
     /* 高度与动效开关可能在首帧之后才随 args 到达，这里再对齐一次 */
     if (Q.get('still') === '1') { STILL = true; document.body.classList.add('still'); }
     if (Q.get('view')) state.view = Q.get('view');
-    if (r.stats.count === 0) return notice('EMPTY');
+    /* 后端告诉我们：这次**有的库没读到**（unreadBases 非空）→ 结果不完整。
+       这时「一场活动都没有」有两种完全不同的解释，必须分开说：
+         · 没读全  → 系统侧问题，稍等重试（不许说「去补关联」）
+         · 读全了却为空 → 才是数据侧没建关联，让用户去找骨干
+       这是用户真实报过的那次：他把 25-26 库没读到，误报成了「记录没建关联」。 */
+    var unread = (r.unreadBases || []).slice();
+    if (r.stats.count === 0) return notice(unread.length ? 'INCOMPLETE' : 'EMPTY');
     state.result = r;
     render(r);
+    showBanners(r, unread);
     show('result', true);
     SRC.reportHeight();
   });
+
+  /* 结果页顶部的说明条：把「不完整」如实说出来，不藏。
+     两类事实合成一条，各自独立：部组降级（缺 base:block:read）与库没读到。 */
+  function showBanners(r, unread) {
+    var lines = [];
+    if (r.degraded) lines.push('部组信息暂时取不到，活动记录不受影响。');
+    if (unread.length) {
+      lines.push('这次没能读全你的档案（' + esc(unread.join('、')) +
+        ' 没读到），下面可能少了部分活动。');
+    }
+    var el = $('degraded');
+    el.hidden = lines.length === 0;
+    el.innerHTML = lines.map(esc).join('<br>');
+  }
 
   /* ── 身份栏 ───────────────────────────────────────── */
   function renderIdent(r) {
@@ -213,7 +246,7 @@
         '<p class="ask">这一天，你的心情是怎样的呢？</p>' +
         (m.joinMessage ? '<blockquote class="joinmsg">' + esc(m.joinMessage) + '</blockquote>' : '') +
       '</div></div>' +
-      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013e" alt=""></div></div>';
+      '<img class="path-art" src="assets/trail-path-ink.png?v=20261013f" alt=""></div></div>';
 
     r.years.forEach(function (y) {
       h += '<div class="yhead"><span class="yn">' + esc(y.year) + ' 学年</span></div>';
@@ -703,8 +736,8 @@
 
     h += '<div class="card-head">' +
       /* 栏图整幅显示：不加遮罩、不裁切、上面不压任何东西。
-         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013e）并放到卡片右下角。 */
-      '<img class="art" src="assets/export-banner.jpg?v=20261013e" alt="">' +
+         原图自带的二维码已单独抠出（assets/export-qr.png?v=20261013f）并放到卡片右下角。 */
+      '<img class="art" src="assets/export-banner.jpg?v=20261013f" alt="">' +
       '<div class="tit"><h2>' + esc(m.name) + '的爱心足迹</h2>' +
       '<div class="when">' + dotd(m.joinDate) + ' 入社</div></div>' +
       '</div>';
@@ -731,11 +764,11 @@
 
     h += '<div class="card-foot">' +
       /* 左下角的社团三字图（用户提供）；文字全部移到中列，不会被它压住 */
-      '<img class="sealimg" src="assets/club-seal.png?v=20261013e" alt="">' +
+      '<img class="sealimg" src="assets/club-seal.png?v=20261013f" alt="">' +
       '<div class="motto">奉献爱心，呼唤爱心，自我教育</div>' +
       '<div class="org">北京大学学生爱心社</div>' +
       '<div class="asof">' + esc(D.scopeText()) + '</div>' +
-      '<div class="qr"><img src="assets/export-qr.png?v=20261013e" alt="爱心社关注二维码"></div>' +
+      '<div class="qr"><img src="assets/export-qr.png?v=20261013f" alt="爱心社关注二维码"></div>' +
       '</div>';
 
     h += '</div>';
@@ -1050,12 +1083,8 @@
     renderTrail(r);
     renderDossier(r);
     renderCard(r);
-
-    $('degraded').hidden = !r.degraded;
-    if (r.degraded) {
-      /* 一行，人话。不要提飞书 / Base / 权限 —— 社员不需要知道后端怎么取数 */
-      $('degraded').innerHTML = '部组信息暂时取不到，活动记录不受影响。';
-    }
+    /* 顶部说明条（部组降级 / 库没读到）由 showBanners 统一负责 ——
+       它要同时考虑两个事实，散在这里会和那边互相覆盖。 */
     setView(state.view);
   }
 

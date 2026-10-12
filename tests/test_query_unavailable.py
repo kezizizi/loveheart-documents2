@@ -17,6 +17,8 @@ from __future__ import annotations
 import pytest
 
 from feishu.member_query import NOT_FOUND_NAME, MemberQueryResult, Participation
+from feishu.models import MemberRecord
+from services.identity import merge_members
 from ui import embed, payload
 
 
@@ -195,3 +197,154 @@ def test_query_unavailable_maps_to_error_status(monkeypatch):
 
     monkeypatch.setattr(embed, "run_query", explode)
     assert embed.query_payload("张三", "2300017473") == {"status": payload.STATUS_ERROR}
+
+
+# --------------------------------------------------------------------------
+# 「没读全」不是「没有活动」（红线 3.16）
+# --------------------------------------------------------------------------
+#
+# 用户真实报过一次：查自己的档案，得到「档案找到了，还没有关联到活动 ——
+# 请联系骨干补上关联」。而他那份档案其实有 14 场活动。
+# 机制：某个库的**主表**没读到（限流 / 权限 / 网络），而另一个库的档案又还没建关联，
+# 于是 found=True + 0 场活动 —— 前端只能看见「0 场」，就把系统故障说成了
+# 「你的数据没补全」，让人白跑去找骨干。
+#
+# 下面守住修复后的三条：判据、重试、以及**不许被缓存**。
+
+
+def _member():
+    """一份可用的 member —— build_payload 在 found=True 时要求它非空。"""
+    merged = merge_members(
+        [
+            MemberRecord(
+                base_key="base_25_26",
+                base_token="tok",
+                table_id="main",
+                record_id="r1",
+                name="高梓凯",
+                sid="2300017473",
+                raw_fields={},
+            )
+        ]
+    )
+    assert merged is not None
+    return merged
+
+
+def _incomplete(*bases: str, activities: int = 0) -> MemberQueryResult:
+    """主表有库没读到 → found=True（另一个库命中了）但结果不完整。"""
+    return MemberQueryResult(
+        found=True,
+        member=_member(),
+        participations=tuple(range(activities)),  # 这里只关心条数
+        errors=("查询 25-26 学年 主表失败：模拟：限流",),
+        searched_bases=("base_25_26", "base_26_27"),
+        bases_unread=tuple(bases or ("25-26 学年",)),
+    )
+
+
+def _complete() -> MemberQueryResult:
+    """读全了，只是这个人真的没有活动记录。"""
+    return MemberQueryResult(
+        found=True, member=_member(), participations=(), bases_unread=()
+    )
+
+
+def test_incomplete_is_not_the_same_as_unavailable():
+    """两者必须分开：一个是「有数据但不全」，一个是「一点都没有」。"""
+    assert embed.is_incomplete(_incomplete()) is True
+    assert embed.is_unavailable(_incomplete()) is False
+    assert embed.is_incomplete(_found()) is False
+    assert embed.is_incomplete(_unavailable("x")) is False
+
+
+def test_incomplete_is_retried_once():
+    """瞬时故障（限流/抖动）等一拍往往就好了 —— 完整结果优先。"""
+    seq = [_incomplete(), _found()]
+    slept: list[float] = []
+
+    result = embed.query_with_retry(lambda: seq.pop(0), delay=0.01, sleep=slept.append)
+
+    assert result.found is True
+    assert slept == [0.01], "不完整也应当重试一次"
+
+
+def test_still_incomplete_raises_but_carries_the_data():
+    """两次都没读全：抛出 QueryIncomplete，**异常里带着那份数据**（不完整 ≠ 不可用）。"""
+    with pytest.raises(embed.QueryIncomplete) as excinfo:
+        embed.query_with_retry(
+            lambda: _incomplete("25-26 学年"), delay=0.0, sleep=lambda _s: None
+        )
+
+    assert excinfo.value.result.found is True
+    assert "25-26 学年" in str(excinfo.value) or excinfo.value.result.bases_unread == ("25-26 学年",)
+
+
+def test_an_incomplete_result_is_never_cached(monkeypatch):
+    """🚩 与「没查成」同样的陷阱：残缺结果被缓存住 = 用户重试多少次都是同一份残缺。
+
+    ``st.cache_data`` 不缓存抛异常的调用，所以不完整必须**抛**。
+    判据：两次调用各跑满 2 次（各重试 1 次）= 4 次；被缓存住的话第二次只有 1 次。
+    """
+    monkeypatch.setattr(embed, "RETRY_DELAY_SECONDS", 0.0)
+    calls: list[str] = []
+
+    def fake_once(name: str, sid: str) -> MemberQueryResult:
+        calls.append(name)
+        return _incomplete()
+
+    monkeypatch.setattr(embed, "_query_once", fake_once)
+    embed.run_query.clear()
+
+    for _ in range(2):
+        with pytest.raises(embed.QueryIncomplete):
+            embed.run_query("高梓凯", "2300017473")
+
+    assert len(calls) == 4, f"残缺结果被缓存住了（只跑了 {len(calls)} 次，应为 4 次）"
+
+
+def test_a_complete_success_is_not_retried_at_all():
+    """读全了就一次都不多打 —— 别把「值不值得重试」放宽成恒真。"""
+    calls: list[int] = []
+
+    def once() -> MemberQueryResult:
+        calls.append(1)
+        return MemberQueryResult(
+            found=True, member=None, participations=(), bases_unread=()
+        )
+
+    embed.query_with_retry(once, delay=0.0, sleep=lambda _s: None)
+    assert len(calls) == 1
+
+
+def test_incomplete_payload_tells_the_frontend_which_bases_were_unread(monkeypatch):
+    """载荷必须带上「哪些库没读到」。
+
+    少了这个字段，前端就无法把「系统没读到」和「你的记录没建关联」分开 ——
+    两件事的用户动作完全相反（一个稍等重试，一个去找骨干补数据）。
+    """
+    monkeypatch.setattr(embed, "run_query", lambda *a, **k: _incomplete("25-26 学年"))
+
+    out = embed.query_payload("高梓凯", "2300017473")
+
+    assert out["status"] == payload.STATUS_OK, "不完整也要照常出结果，不是 ERROR"
+    assert out["unreadBases"] == ["25-26 学年"]
+
+
+def test_incomplete_without_activities_still_returns_ok_not_error(monkeypatch):
+    """用户报的那一格：0 场活动 + 有库没读到 → 仍是 OK 载荷，但带着 unreadBases。
+
+    前端据此显示「这次没能读全」而不是「去联系骨干补关联」。
+    """
+    monkeypatch.setattr(embed, "run_query", lambda *a, **k: _incomplete("25-26 学年"))
+
+    out = embed.query_payload("高梓凯", "2300017473")
+
+    assert out["status"] == payload.STATUS_OK
+    assert out["unreadBases"] == ["25-26 学年"]
+    assert set(out) == {"status", "member", "degraded", "unreadBases"}
+
+
+def test_unread_bases_never_leak_into_a_normal_result():
+    """读全了就是空列表 —— 别让前端无缘无故挂一句「没读全」。"""
+    assert payload.build_payload(_complete(), degraded=False)["unreadBases"] == []

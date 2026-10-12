@@ -165,6 +165,10 @@
         var r = normalize(global.MOCK_DB.lookup(name, sid));
         /* ?degraded=1 演示「缺 base:block:read 时部组全判其他」这一态 */
         if (params.get('degraded') === '1') r = global.AX_DERIVE.degrade(r);
+        /* ?incomplete=1 演示「有的库没读到」这一态（后端用 unreadBases 如实告知）。
+           只为演示与回归：没有它就没法在本地复现「档案找到了却一场活动都没有」
+           到底该说系统故障还是该说数据没建关联（app.js 的 INCOMPLETE 分支）。 */
+        if (params.get('incomplete') === '1') r.unreadBases = ['25-26 学年'];
         deliver(r);
       }, d);
     });

@@ -107,6 +107,12 @@ class MemberQueryResult:
     searched_bases: tuple[str, ...] = ()
     #: 仅在 ``found is False`` 时有值，取值见 ``NOT_FOUND_*``
     not_found_reason: str | None = None
+    #: **主表根本没读到**的库标签（权限 / 限流 / 网络）。非空表示这次结果**不完整**：
+    #: 缺的不是某一张活动表，而是整个库的档案与它的关联 —— 可能少一整学年，
+    #: 也可能表现成「档案找到了，但一场活动都没有」。
+    #: **必须**与「真的没建关联」区分开，否则会把系统故障说成「你的数据没补全」，
+    #: 让社员白跑去找骨干（红线 3.16）。
+    bases_unread: tuple[str, ...] = ()
     #: 「与 N 位伙伴同行」的人数。``None`` = 统计不到（一张表都扫不动），
     #: 与 0（真的一个同场伙伴都没有）**必须区分** —— 0 会谎称「没有伙伴」。
     co_partners: int | None = None
@@ -581,6 +587,8 @@ def query_member(
     searched: list[str] = []
 
     reasons: list[str | None] = []
+    #: 主表**一次都没读到**的库。它决定这次结果完不完整 —— 见 MemberQueryResult.bases_unread
+    unread: list[str] = []
     for spec in specs:
         searched.append(spec.key)
         try:
@@ -589,19 +597,31 @@ def query_member(
             raise
         except Exception as exc:  # noqa: BLE001
             errors.append(f"查询 {spec.label} 主表失败：{exc}")
+            unread.append(spec.label)
             continue
         reasons.append(look.reason)
         records.extend(look.records)
         errors.extend(look.errors)
+        # 这个库**一次都没给出答案**（它自己每一趟检索都失败了）→ 也算「没读到」。
+        # 注意它通常**不抛异常**：lookup_member 把每趟检索的失败都收进 errors，
+        # 只有「所有检索都失败」时才留下 reason=None 这个信号（见 pick_not_found_reason）。
+        # 光看异常会把这一整类漏掉 —— 那正是用户看到的「档案找到了却一场活动都没有」。
+        if not look.records and look.reason is None:
+            unread.append(spec.label)
 
     if not records:
+        # ⚠️ 有库没读到的时候，「查无此人」这个结论是**不成立**的：
+        # 那个人完全可能就在没读到的那个库里。拿另一个库的归因当结论，
+        # 会把社员引向补录问卷 —— 与红线 3.12 同一类错误，只是方向相反。
+        # 所以这时只能说「没查成」（归因 None），交给上层重试 / 如实报错。
         return MemberQueryResult(
             found=False,
             member=None,
             participations=(),
             errors=tuple(errors),
             searched_bases=tuple(searched),
-            not_found_reason=pick_not_found_reason(reasons),
+            not_found_reason=None if unread else pick_not_found_reason(reasons),
+            bases_unread=tuple(unread),
         )
 
     member = merge_members(records)
@@ -631,4 +651,5 @@ def query_member(
         searched_bases=tuple(searched),
         co_partners=co_partners,
         co_partners_truncated=got.partners_truncated,
+        bases_unread=tuple(unread),
     )

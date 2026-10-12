@@ -506,6 +506,53 @@ def test_query_member_survives_one_base_unreadable(specs):
     assert any("26-27" in e for e in result.errors)
 
 
+def test_a_base_whose_main_table_never_answered_is_reported_as_unread(specs):
+    """🚩 用户真实报过的那一格：**主表读不到的库必须被记下来**。
+
+    机制：25-26 库的主表检索抛错（限流 / 权限 / 网络）→ 只剩 26-27 库那条
+    「还没建关联」的档案 → found=True 且**一场活动都没有**。
+    这时如果把 bases_unread 丢掉，前端就只能看见「0 场」，于是把系统故障
+    说成「你的记录没建关联，请联系骨干补上」—— 冤枉人，还盖住了真问题（红线 3.16）。
+
+    注意与上面那条区分：那条是**注册表阶段**（list_blocks）失败，这条是
+    **主表检索**失败 —— 后者才是「档案找到了却一场活动都没有」的成因。
+    """
+    from tests.conftest import FakeBitableClient, load_fixture
+
+    raw_fields = load_fixture("fields.json")
+    raw_records = load_fixture("records.json")
+    flat_f: dict[tuple[str, str], list] = {}
+    flat_r: dict[tuple[str, str], list] = {}
+    for raw, target in ((raw_fields, flat_f), (raw_records, flat_r)):
+        for base, tables in raw.items():
+            for tid, items in tables.items():
+                target[(base, tid)] = items
+
+    class MainTableDown(FakeBitableClient):
+        """只让 25-26 的**主表**搜不动；注册表本身是好的。"""
+
+        def search_records(self, base_token, table_id, **kwargs):
+            if base_token == BASE_25_26 and table_id == _main_table_id(specs, "base_25_26"):
+                raise RuntimeError("模拟：25-26 主表检索被限流")
+            return super().search_records(base_token, table_id, **kwargs)
+
+    client = MainTableDown(
+        blocks=load_fixture("blocks.json"), fields=flat_f, records=flat_r
+    )
+    registry = build_registry(client, specs)
+    result = query_member(client, registry, specs, "张三", "2300017473")
+
+    assert result.found is True, "另一个库命中了，所以「找到了」"
+    assert result.bases_unread == ("25-26 学年",), (
+        f"主表没读到的库必须如实记下来，实际 {result.bases_unread}"
+    )
+    assert any("25-26" in e for e in result.errors)
+
+
+def _main_table_id(specs, key: str) -> str:
+    return next(s for s in specs if s.key == key).main_table_id
+
+
 def test_main_projection_drops_over_long_link_field(specs):
     """⚠️ 主表投影里带超长关联列名，会让**整个主表查询**失败 —— 那时一个人都找不到。
 

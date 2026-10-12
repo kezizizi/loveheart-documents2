@@ -169,9 +169,21 @@ def _one_result() -> MemberQueryResult:
 
 def test_ok_payload_has_exactly_the_agreed_keys():
     p = P.build_payload(_one_result())
-    assert set(p) == {"status", "member", "degraded"}, set(p)
+    # unreadBases 不是派生数据，是后端的事实（哪些库这次没读到）——
+    # 与 degraded 同类，前端据此把「不完整」如实说出来（红线 3.16）。
+    assert set(p) == {"status", "member", "degraded", "unreadBases"}, set(p)
     assert set(p["member"]) == _MEMBER_KEYS, set(p["member"]) ^ _MEMBER_KEYS
     assert set(p["member"]["activities"][0]) == _ACTIVITY_KEYS
+
+
+def test_frontend_reads_the_unread_bases_flag():
+    """前端必须真的读 unreadBases，否则「没读全」会被说成「你没建关联」。
+
+    用户真实报过这一次：某个库的主表没读到 → 0 场活动 → 页面让他去找骨干补关联。
+    """
+    app = _read(WEB / "app.js")
+    assert "unreadBases" in app, "app.js 必须用 unreadBases 区分「没读全」与「真的没关联」"
+    assert "INCOMPLETE" in app, "app.js 的 NOTICES 里必须有 INCOMPLETE 这一档文案"
 
 
 def test_payload_does_not_carry_derived_fields():

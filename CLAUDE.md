@@ -26,7 +26,7 @@
                      │                             （相对路径原样可用，因为它是真实 URL）
                      │
                      ├─ setComponentValue {name, sid} ──► Python 查飞书
-                     └─ ◄── render {result: {status, member, degraded}, params}
+                     └─ ◄── render {result: {status, member, degraded, unreadBases}, params}
 ```
 
 **为什么用自定义组件而不是别的路**
@@ -48,8 +48,8 @@
 
 | 指标 | 值 |
 | --- | --- |
-| Python 测试 | **235 项**，全绿，不触网、不需密钥 |
-| 前端自检 | **156 项**，在真实浏览器里跑（`static/_work/run-selftest.mjs`）；该脚本另做 **3 项独立形态交互回归** |
+| Python 测试 | **245 项**，全绿，不触网、不需密钥 |
+| 前端自检 | **156 项**，在真实浏览器里跑（`static/_work/run-selftest.mjs`）；该脚本另做 **7 项独立形态交互回归** |
 | Streamlit 端到端验收 | **63 项**（`static/_work/e2e-streamlit.mjs`） |
 | 自动发现的活动问卷表 | **171 张**（25-26 学年 125 + 26-27 学年 46） |
 | 注册表构建耗时 | 约 13 秒（约 175 次 API 请求） |
@@ -160,7 +160,8 @@ render → 撑高 iframe → 宿主重排 → 再 render。实测 18 秒内收�
 
 ### 3.9 后端只发「原始记录 + 状态」，派生只在前端算一次
 
-载荷**只有** `{status, member, degraded}`。`stats` / `groups` / `terms` / `years`  
+载荷**只有** `{status, member, degraded, unreadBases}` —— 后两个是后端的事实
+（部组降级、哪些库这次没读到），不是派生数据。`stats` / `groups` / `terms` / `years`  
 一律由 `static/web/data/derive.js` 在前端算，全站只有那一份实现。
 
 - **不要**为了「让前端省点事」在后端也算一份 —— 两边各算一套必然出现自相矛盾  
@@ -275,6 +276,45 @@ canvas 先铺白底（PNG 透明区在相册里会显示成黑块）。
 （`@media print` 与 `#print` 按钮都已移除），守卫是 `e2e-streamlit.mjs` 里
 「不再有打印按钮」那一条。产物真伪由三条断言钉住：MIME、PNG 魔数、能被解码成正尺寸。
 
+### 3.16 「有个库没读到」绝不许说成「你没有活动 / 没有这个人」
+
+用户真实报过一次：查自己的档案，页面说
+**「档案找到了，还没有关联到活动 —— 请联系骨干补上关联」**，而他其实有 14 场活动。
+
+机制：`query_member` 逐库认人，某库**主表一次都没读到**（限流 / 权限 / 网络）时
+只把错误记进 `errors` 就 `continue`。如果另一个库恰好命中了那条**还没建关联**的档案，
+结果就是 `found=True` + 0 场活动 —— 而 `build_payload` 早先只发
+`{status, member, degraded}`，`errors` 被丢掉，前端只能看见「0 场」，
+于是把**系统故障**说成了**用户的数据没补全**，让人白跑去找骨干。
+
+⚠️ 注意这个信号**不抛异常**：`lookup_member` 把每趟检索的失败都收进 `errors`，
+只有「所有检索都失败」时才留下 `reason is None`。所以判据是
+「该库没有命中记录 **且** 没有归因」，不是「有没有抛异常」。
+
+现在的做法：
+
+| 事实 | 载体 | 前端说法 |
+| --- | --- | --- |
+| 主表有库没读到 | `MemberQueryResult.bases_unread` → 载荷 `unreadBases` | 0 场 → 「这次没能读全你的档案」（系统侧，稍等重试）<br>有活动 → 照常显示 + 说明条「下面可能少了部分活动」 |
+| 读全了，确实没关联 | `unreadBases == []` | 才说「还没有关联到活动」（数据侧，找骨干） |
+
+三条配套的不变量：
+
+1. **不完整的结果不许被缓存。** `query_with_retry` 重试一次后仍不完整就抛
+   `QueryIncomplete`（异常里**带着数据** —— 不完整 ≠ 不可用），
+   `query_payload` 接住它照常渲染。用异常是因为 `st.cache_data` 不缓存抛异常的调用；
+   返回它就会被冻住 10 分钟，用户重试多少次都是同一份残缺（与红线 3.12 同源）。
+2. **有库没读到 ⇒「查无此人」这个结论不成立。** 那个人可能就在没读到的库里，
+   所以这时 `not_found_reason` 一律给 `None`（＝「没查成」），
+   绝不拿另一个库的归因当结论 —— 那会把人引向补录问卷。方向相反，错法一样。
+3. **只认「整个库没读到」。** 单张活动表失败**不算**不完整：那种残缺只少一两场活动，
+   为它把整份结果判死，用户会因为 172 张表里的一张打嗝而什么都看不到（见 §12）。
+
+守卫：`tests/test_query_unavailable.py`（判据 / 重试 / 不许缓存 / 载荷带 unreadBases）、
+`tests/test_member_query.py::test_a_base_whose_main_table_never_answered_is_reported_as_unread`、
+`tests/test_frontend_contract.py`（前端必须真的读 unreadBases 且有 INCOMPLETE 文案）、
+`run-selftest.mjs` 那 4 项（`?incomplete=1` 造出这一态，验两句话没有混）。
+
 ---
 
 ## 4. 数据流与分层
@@ -366,7 +406,7 @@ docs/                       设计源文件、飞书结构分析报告，以及�
       ├ triage-labels.md    五个 triage 角色 ↔ 实际标签字符串
       └ domain.md           领域文档放哪、怎么用它的词汇
 scripts/verify_live.py      真实接口联调自检（用真实密钥，只打印结论不做断言）
-tests/                      235 项单元测试 + 录制的 JSON fixture（blocks/fields/records）
+tests/                      245 项单元测试 + 录制的 JSON fixture（blocks/fields/records）
 .github/workflows/ci.yml    跑测试 + 密钥泄漏扫描
 ```
 
@@ -445,7 +485,7 @@ AX_DEMO=1 "C:/Users/gzk16/AppData/Local/Programs/Python/Python39/python.exe" -m 
 ### 8.3 前端自检与端到端验收（**别靠肉眼**）
 
 ```bash
-# 前端回归：156 项断言 + 3 项独立形态交互回归，自带静态服务器与一次性浏览器 profile
+# 前端回归：156 项断言 + 7 项独立形态交互回归，自带静态服务器与一次性浏览器 profile
 node static/_work/run-selftest.mjs
 
 # Streamlit 端到端：先起 Streamlit，再跑（63 项 + 逐视图截图）
@@ -514,6 +554,32 @@ WARNING ui.embed: 取数失败（非查无此人）｜高＊＊｜[25-26 学年]
 * 一条日志都没有？那说明前端根本没把请求发出来（看浏览器控制台），与数据层无关。
 
 Streamlit Community Cloud 上在 **Manage app → Logs** 里看同一份日志。
+
+### 8.4.2 社员报「档案找到了，但一场活动都没有」时怎么查
+
+先分清**两件完全不同的事**，它们的处理办法正好相反：
+
+| 页面上的话 | 含义 | 怎么办 |
+| --- | --- | --- |
+| 「档案找到了，还没有关联到活动」 | 三个库**都读到了**，那份档案确实没建关联 | 数据补录：让骨干在飞书里把活动记录关联到这条档案 |
+| 「这次没能读全你的档案」 | **有库没读到**（限流 / 权限 / 网络），结果可能偏少 | 系统问题：稍等重试；一直这样就看下面的日志 |
+
+日志里搜 `ui.embed`：
+
+```
+WARNING ui.embed: 取数不完整（有库没读到，结果可能偏少）｜高＊＊｜未读到：25-26 学年
+```
+
+* **有这条 WARNING** → 就是读不全。已经在 `query_with_retry` 里自动重试过一次，
+  且**不完整的结果不进缓存**，所以「稍等再点一次」真的会重新查（红线 3.16）。
+  反复出现的话，按 `未读到` 后面的库名去查那个库的协作者权限（§8.5）或当时的限流。
+* **没有这条 WARNING，且页面说「还没有关联到活动」** → 这是**数据侧**的结论，可信。
+  用 `python scripts/verify_live.py` 看那位社员主表记录里的 link 字段数：
+  0 个就是真的没建关联。
+
+⚠️ 查这条之前先确认**跑的是最新代码**：这个提示是 2026-10 之后才有的。
+旧版本遇到同样的情况会直接说「还没有关联到活动」，从而把系统故障说成数据问题 ——
+那正是用户报过的那一次。
 
 ### 8.5 飞书后台配置（新克隆仓库必做，最容易漏）
 
@@ -660,7 +726,7 @@ main_table_id = "「社员档案」主表的 table_id"
 - `search_records` 的 `limit` 在旧版回退路径被忽略（会全量返回），不影响正确性，只影响速度。
 - 导出 PNG 用的是 SVG foreignObject 快照：**只在 Chromium 内核上验证过**（含逐张人眼复核）。  
   Safari / 微信内置浏览器没试过（foreignObject 在非 Chromium 内核上的表现未验证）。
-- `?degraded=1` 与 `?delay=` 只在**独立形态**有意义（组件形态下 `degraded` 由后端如实给出）。
+- `?degraded=1` / `?delay=` / `?incomplete=1` 只在**独立形态**有意义（组件形态下这些事实都由后端如实给出）。
 
 **未完成**
 

@@ -162,6 +162,26 @@ class QueryUnavailable(RuntimeError):
     """
 
 
+class QueryIncomplete(Exception):
+    """读到了东西，但**有的库根本没读到** —— 结果不完整，不能当成完整答案。
+
+    典型症状（用户真实报过）：25-26 库的主表没读成功，而 26-27 库的档案又还没建关联，
+    于是「档案找到了，一场活动也没有」。把它当完整结果交出去，前端就会说
+    「你的记录还没建立关联，请联系骨干补上」—— 冤枉了人，还掩盖了系统故障。
+
+    ⚠️ 与 :class:`QueryUnavailable` 同样的理由用异常表达：``st.cache_data``
+    不缓存抛异常的调用。一份残缺结果一旦被缓存 10 分钟，用户「再试一次」拿到的
+    还是同一份残缺 —— 这正是红线 3.12 那个「一直这样」的机制。
+
+    但**不完整 ≠ 不可用**：异常里带着结果，调用方照样把它渲染出来，只是附一句实话。
+    """
+
+    def __init__(self, result: MemberQueryResult, detail: str = ""):
+        text = detail or "；".join(result.errors[:3]) or "有库没读到，且没有留下错误信息"
+        super().__init__(text)
+        self.result = result
+
+
 def is_unavailable(result: MemberQueryResult) -> bool:
     """这次是「没查成」而不是「查无此人」吗？
 
@@ -170,29 +190,51 @@ def is_unavailable(result: MemberQueryResult) -> bool:
     return (not result.found) and result.not_found_reason is None
 
 
+def is_incomplete(result: MemberQueryResult) -> bool:
+    """这次结果**读全了吗**？有库的主表没读到就是不完整。
+
+    只认「整个库没读到」这一档。某一张活动表失败**不算**：那种残缺只会少一两场活动，
+    为它把整份结果判死，用户会因为 172 张表里的一张打嗝而什么都看不到（见 §12）。
+    """
+    return bool(result.bases_unread)
+
+
+def needs_retry(result: MemberQueryResult) -> bool:
+    """值不值得重试：完全没查成，或者没读全。两者都是秒级的瞬时故障，等一拍往往就好。"""
+    return is_unavailable(result) or is_incomplete(result)
+
+
 def query_with_retry(
     once: Callable[[], MemberQueryResult],
     *,
     delay: float | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> MemberQueryResult:
-    """跑一次；只有「没查成」才等一拍重试一次；仍然没查成就抛 :class:`QueryUnavailable`。
+    """跑一次；没查成 / 没读全就等一拍重试一次。
 
     「查无此人」**不重试**：那是确定的答案，重试只是白烧 API 配额。
     重试只针对基础设施失败 —— 限流与网络抖动都是秒级的，等一拍往往就好了。
+
+    重试之后仍然：
+    * **一点数据都没有** → 抛 :class:`QueryUnavailable`（前端说「没查成」）；
+    * **有数据但没读全** → 抛 :class:`QueryIncomplete`，异常里带着那份数据。
+      为什么不直接返回它：返回就会被 ``st.cache_data`` 冻住 10 分钟（见类文档）。
     """
     pause = RETRY_DELAY_SECONDS if delay is None else delay
 
     result = once()
-    if not is_unavailable(result):
+    if not needs_retry(result):
         return result
 
     sleep(pause)
-    result = once()
-    if not is_unavailable(result):
-        return result
+    retried = once()
+    if not needs_retry(retried):
+        return retried
 
-    detail = "；".join(result.errors[:3]) or "主表检索未成功，且没有留下错误信息"
+    if retried.found:
+        raise QueryIncomplete(retried)
+
+    detail = "；".join(retried.errors[:3]) or "主表检索未成功，且没有留下错误信息"
     raise QueryUnavailable(detail)
 
 
@@ -233,6 +275,19 @@ def query_payload(name: str, sid: str) -> dict:
     try:
         result = run_query(name, sid)
         return P.build_payload(result, degraded=degraded_mode())
+    except QueryIncomplete as exc:
+        # 不完整**也是结果**：照常渲染，只是载荷里带着 unreadBases，前端会如实说明。
+        # 它走的是异常通道，所以不会被 st.cache_data 冻住（红线 3.16）。
+        _LOGGER.warning(
+            "取数不完整（有库没读到，结果可能偏少）｜%s｜未读到：%s",
+            _mask(name),
+            "、".join(exc.result.bases_unread) or "(未标注)",
+        )
+        try:
+            return P.build_payload(exc.result, degraded=degraded_mode())
+        except Exception:  # noqa: BLE001 - 翻译层自己的 bug 也不能白屏
+            _LOGGER.exception("翻译社员足迹载荷失败（%s）", _mask(name))
+            return P.payload_for_error()
     except QueryUnavailable as exc:
         # 这不是「查无此人」，是「这次没查成」。日志里留下可执行的原因（姓名脱敏）。
         _LOGGER.warning("取数失败（非查无此人）｜%s｜%s", _mask(name), exc)

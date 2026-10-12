@@ -138,6 +138,11 @@ def build_payload(
         "status": STATUS_OK,
         "member": build_member(result),
         "degraded": bool(degraded),
+        # 这次**没读到**的库（空列表＝读全了）。它不是派生数据，是后端的事实 ——
+        # 与 ``degraded`` 同类：前端必须据此把「不完整」如实说出来。
+        # 少了它，前端就无法区分「你的记录没建关联」和「我们压根没读到那个库」，
+        # 而这两件事的用户动作完全相反（一个去找骨干补数据，一个是系统故障等重试）。
+        "unreadBases": list(result.bases_unread),
     }
 
 
