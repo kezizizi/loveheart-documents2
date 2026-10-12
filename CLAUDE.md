@@ -2,7 +2,8 @@
 
 > **这份文件是本仓库唯一的交接文档（仓库里没有 README，也不要有）。**  
 > 写给 AI 协作者：读完这一份就该能安全地改这个仓库，不必先读完全部代码。  
-> 改动代码后请**同步更新本文件**，尤其是第 3 节的红线与第 6 节的口径。
+> 改动代码后请**同步更新本文件**，尤其是第 3 节的红线与第 6 节的口径。  
+> 工程类 skill 的仓库配置（issue tracker / 标签词表 / 领域文档）见文末「Agent skills」一节。
 
 ---
 
@@ -301,8 +302,12 @@ static/_work/  ── 开发与验证工具（同样不会被公开）
   serve.py                  静态服务器（对所有响应发 no-store）
   pdfcheck.py / shot.ps1 / phone-shot.ps1 / measure*.html   打印差分与截图工具
 
-docs/                       设计源文件与飞书表格结构分析报告
-  └ 爱心社社员档案_飞书多维表格结构分析.md   ← 想了解 Base 的真实结构看这份
+docs/                       设计源文件、飞书结构分析报告，以及工程类 skill 的仓库配置
+  ├ 爱心社社员档案_飞书多维表格结构分析.md   ← 想了解 Base 的真实结构看这份
+  └ agents/                 工程类 skill 的仓库配置（见文末「Agent skills」）
+      ├ issue-tracker.md    任务/bug 记在哪、怎么用 gh 操作
+      ├ triage-labels.md    五个 triage 角色 ↔ 实际标签字符串
+      └ domain.md           领域文档放哪、怎么用它的词汇
 scripts/verify_live.py      真实接口联调自检（用真实密钥，只打印结论不做断言）
 tests/                      199 项单元测试 + 录制的 JSON fixture（blocks/fields/records）
 .github/workflows/ci.yml    跑测试 + 密钥泄漏扫描
@@ -422,7 +427,8 @@ python scripts/verify_live.py --skip-query # 只建注册表，不查具体社�
 敏感字段泄漏检查、一次真实社员查询结果。打印姓名时做脱敏。  
 **判断改动是否无损，就看这里的活动表数量与命中数是否与改前一致。**
 
-⚠️ 新版前端**尚未连过线上真实库**（只跑过录制 fixture）。首次连真实库时重点核对：  
+新版前端已经在线上真实库上**只读**跑通（10 个社员、两库各 5 个，10/10 出结果；
+172 张活动表、无敏感字段泄漏）。但**还没有真人从头到尾用过一遍**，所以这几项仍值得核对：  
 `院系` 是否为空、`想对爱心社说的话` 是否取到、活动条数是否与骨干手工数的一致。
 
 ### 8.4.1 社员报「这次没能读到你的档案」时怎么查
@@ -595,6 +601,29 @@ main_table_id = "「社员档案」主表的 table_id"
   失败不入缓存、并把飞书返回的原文写进日志。**若再次出现，请先按 8.4.1 抓那条 WARNING。**
 - 线上真实库已经**只读**跑通过（172 张活动表 / 命中 14–29 条记录 / 无敏感字段泄漏），  
   但仍**没有真人从头到尾用过一遍**，也**尚未部署**。
+
+---
+
+## Agent skills
+
+工程类 skill（`to-issues` / `triage` / `to-prd` / `diagnose` / `tdd` /
+`improve-codebase-architecture` 等）的仓库配置。三份细则都在 `docs/agents/` 下。
+
+### Issue tracker
+
+任务与 bug 记在 **GitHub Issues**（`kezizizi/loveheart-documents2`），用 `gh` CLI 操作。
+⚠️ 本机 `gh` **尚未登录**，首次使用前先跑 `gh auth login`。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+五个规范角色用**默认英文标签**（`needs-triage` / `needs-info` / `ready-for-agent` /
+`ready-for-human` / `wontfix`），左右两列相同、未改名。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+**单上下文（single-context）**，但领域语言**不放在 `CONTEXT.md`** —— 它就是本文件
+第 6 节「领域口径」，架构决策的「为什么」在本文件第 3 节。`docs/adr/` 目前不存在。
+见 `docs/agents/domain.md`。
 
 ---
 
